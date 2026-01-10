@@ -1318,13 +1318,13 @@ defineEarlyCutoff' doDiagnostics cmp key file mbOld mode action = do
 -- dirty in between build sessions) that is not visible to the hls-graph
 -- Essentially, we need to keep the rule cache and dirty key and hls-graph's internal state
 -- in sync.
-
+--
 -- 1. A dirty key collected in a session should not be removed from dirty keys in the same session.
 -- Since if we clean out the dirty key in the same session,
 --     1.1. we will lose the chance to dirty its reverse dependencies. Since it only happens during session restart.
 --     1.2. a key might be marked as dirty in ShakeExtras while it's being recomputed by hls-graph which could lead to it's premature removal from dirtyKeys.
 --          See issue https://github.com/haskell/haskell-language-server/issues/4093 for more details.
-
+--
 -- 2. When a key is marked clean in the hls-graph's internal running
 -- state, the rule cache and dirty keys are updated in the same transaction.
 -- otherwise, some situations like the following can happen:

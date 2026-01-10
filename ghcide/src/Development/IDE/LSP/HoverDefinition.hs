@@ -13,6 +13,7 @@ module Development.IDE.LSP.HoverDefinition
     , gotoImplementation
     , documentHighlight
     , references
+    , wsDiagnostics
     , wsSymbols
     ) where
 
@@ -34,13 +35,13 @@ import qualified Data.Text                      as T
 
 
 data Log
-  = LogWorkspaceSymbolRequest !T.Text
+  = LogWorkspaceRequest !T.Text !T.Text
   | LogRequest !T.Text !Position !NormalizedFilePath
   deriving (Show)
 
 instance Pretty Log where
   pretty = \case
-    LogWorkspaceSymbolRequest query -> "Workspace symbols request:" <+> pretty query
+    LogWorkspaceRequest request query -> "Workspace" <+> pretty request <+> "request:" <+> pretty query
     LogRequest label pos nfp ->
       pretty label <+> "request at position" <+> pretty (showPosition pos) <+>
         "in file:" <+> pretty (fromNormalizedFilePath nfp)
@@ -64,8 +65,13 @@ references recorder ide _ (ReferenceParams (TextDocumentIdentifier uri) pos _ _ 
 
 wsSymbols :: Recorder (WithPriority Log) -> PluginMethodHandler IdeState Method_WorkspaceSymbol
 wsSymbols recorder ide _ (WorkspaceSymbolParams _ _ query) = liftIO $ do
-  logWith recorder Debug $ LogWorkspaceSymbolRequest query
-  runIdeAction "WorkspaceSymbols" (shakeExtras ide) $ InL . fromMaybe [] <$> workspaceSymbols query
+  logWith recorder Debug $ LogWorkspaceRequest "symbol" query
+  runIdeAction "WorkspaceSymbols" (shakeExtras ide) $ InL <$> workspaceSymbols query
+
+wsDiagnostics :: Recorder (WithPriority Log) -> PluginMethodHandler IdeState Method_WorkspaceDiagnostic
+wsDiagnostics recorder ide _ (WorkspaceDiagnosticParams _ _ identifier previousResultId) = liftIO $ do
+  logWith recorder Info $ LogWorkspaceRequest "diagnostic" (fromMaybe "<identifier?>" identifier)
+  Shake.runAction "WorkspaceDiagnostic" ide $ workspaceDiagnostics ide identifier previousResultId
 
 foundHover :: (Maybe Range, [T.Text]) -> Hover |? Null
 foundHover (mbRange, contents) =

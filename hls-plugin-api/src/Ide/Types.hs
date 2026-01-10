@@ -519,6 +519,10 @@ instance PluginMethod Request Method_WorkspaceSymbol where
   -- Unconditionally enabled, but should it really be?
   handlesRequest _ _ _ _ = HandlesRequest
 
+instance PluginMethod Request Method_WorkspaceDiagnostic where
+  -- Unconditionally enabled, but should it really be?
+  handlesRequest _ _ _ _ = HandlesRequest
+
 instance PluginMethod Request Method_TextDocumentInlayHint where
   handlesRequest = pluginEnabledWithFeature plcInlayHintsOn
 
@@ -718,6 +722,9 @@ instance PluginRequestMethod Method_WorkspaceSymbol where
     -- TODO: combine WorkspaceSymbol. Currently all WorkspaceSymbols are dumped
     -- as it is new of lsp-types 2.0.0.0
     combineResponses _ _ _ _ xs = InL $ mconcat $ takeLefts $ toList xs
+
+instance PluginRequestMethod Method_WorkspaceDiagnostic where
+    combineResponses _ _ _ _ xs = WorkspaceDiagnosticReport $ concatMap (\x -> x ^. L.items) xs
 
 instance PluginRequestMethod Method_TextDocumentCodeLens where
 
@@ -1229,6 +1236,9 @@ instance HasTracing InitializeParams
 instance HasTracing InitializedParams
 instance HasTracing WorkspaceSymbolParams where
   traceWithSpan sp (WorkspaceSymbolParams _ _ query) = setTag sp "query" (encodeUtf8 query)
+instance HasTracing WorkspaceDiagnosticParams where
+  traceWithSpan _ (WorkspaceDiagnosticParams _ _ Nothing _) = mempty
+  traceWithSpan sp (WorkspaceDiagnosticParams _ _ (Just query) _) = setTag sp "query" (encodeUtf8 query)
 instance HasTracing CallHierarchyIncomingCallsParams
 instance HasTracing CallHierarchyOutgoingCallsParams
 

@@ -56,7 +56,8 @@ descriptor recorder plId = (defaultPluginDescriptor plId desc)
                   <> mkPluginHandler SMethod_TextDocumentDocumentHighlight (\ide _ DocumentHighlightParams{..} ->
                       Hover.documentHighlight recorder ide TextDocumentPositionParams{..})
                   <> mkPluginHandler SMethod_TextDocumentReferences (Hover.references recorder)
-                  <> mkPluginHandler SMethod_WorkspaceSymbol (Hover.wsSymbols recorder),
+                  <> mkPluginHandler SMethod_WorkspaceSymbol (Hover.wsSymbols recorder)
+                  <> mkPluginHandler SMethod_WorkspaceDiagnostic (Hover.wsDiagnostics recorder),
 
     pluginConfigDescriptor = defaultConfigDescriptor
   }

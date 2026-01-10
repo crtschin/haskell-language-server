@@ -1,19 +1,23 @@
 {-# LANGUAGE TypeFamilies #-}
-module Development.IDE.Core.Actions
-( getAtPoint
-, getDefinition
-, getTypeDefinition
-, getImplementationDefinition
-, highlightAtPoint
-, refsAtPoint
-, workspaceSymbols
-, lookupMod
+
+module Development.IDE.Core.Actions (
+    getAtPoint,
+    getDefinition,
+    getTypeDefinition,
+    getImplementationDefinition,
+    highlightAtPoint,
+    refsAtPoint,
+    workspaceDiagnostics,
+    workspaceSymbols,
+    lookupMod,
 ) where
 
-import           Control.Monad.Extra                  (mapMaybeM)
+import           Control.Concurrent.STM               (atomically)
+import           Control.Monad.Extra                  (forM, mapMaybeM)
 import           Control.Monad.Reader
 import           Control.Monad.Trans.Maybe
 import qualified Data.HashMap.Strict                  as HM
+import qualified Data.Map                             as Map
 import           Data.Maybe
 import qualified Data.Text                            as T
 import           Data.Tuple.Extra
@@ -26,13 +30,21 @@ import           Development.IDE.Core.Service
 import           Development.IDE.Core.Shake
 import           Development.IDE.Graph
 import qualified Development.IDE.Spans.AtPoint        as AtPoint
+import           Development.IDE.Types.Diagnostics
 import           Development.IDE.Types.HscEnvEq       (hscEnv)
 import           Development.IDE.Types.Location
 import           GHC.Iface.Ext.Types                  (Identifier)
 import qualified HieDb
-import           Language.LSP.Protocol.Types          (DocumentHighlight (..),
+import           Language.LSP.Protocol.Types          (AString (..),
+                                                       DocumentHighlight (..),
+                                                       Null (..),
+                                                       PreviousResultId,
                                                        SymbolInformation (..),
+                                                       WorkspaceDiagnosticReport (..),
+                                                       WorkspaceDocumentDiagnosticReport (..),
+                                                       WorkspaceFullDocumentDiagnosticReport (..),
                                                        normalizedFilePathToUri,
+                                                       type (|?) (..),
                                                        uriToNormalizedFilePath)
 
 -- IMPORTANT NOTE : make sure all rules `useWithStaleFastMT`d by these have a "Persistent Stale" rule defined,
@@ -45,43 +57,46 @@ import           Language.LSP.Protocol.Types          (DocumentHighlight (..),
 -- | Try to get hover text for the name under point.
 getAtPoint :: NormalizedFilePath -> Position -> IdeAction (Maybe (Maybe Range, [T.Text]))
 getAtPoint file pos = runMaybeT $ do
-  ide <- ask
-  opts <- liftIO $ getIdeOptionsIO ide
+    ide <- ask
+    opts <- liftIO $ getIdeOptionsIO ide
 
-  (hf, mapping) <- useWithStaleFastMT GetHieAst file
-  shakeExtras <- lift askShake
+    (hf, mapping) <- useWithStaleFastMT GetHieAst file
+    shakeExtras <- lift askShake
 
-  env <- hscEnv . fst <$> useWithStaleFastMT GhcSession file
-  dkMap <- lift $ maybe (DKMap mempty mempty mempty) fst <$> runMaybeT (useWithStaleFastMT GetDocMap file)
+    env <- hscEnv . fst <$> useWithStaleFastMT GhcSession file
+    dkMap <- lift $ maybe (DKMap mempty mempty mempty) fst <$> runMaybeT (useWithStaleFastMT GetDocMap file)
 
-  !pos' <- MaybeT (return $ fromCurrentPosition mapping pos)
+    !pos' <- MaybeT (return $ fromCurrentPosition mapping pos)
 
-  MaybeT $ liftIO $ fmap (first (toCurrentRange mapping =<<)) <$>
-    AtPoint.atPoint opts shakeExtras hf dkMap env pos'
+    MaybeT $
+        liftIO $
+            fmap (first (toCurrentRange mapping =<<))
+                <$> AtPoint.atPoint opts shakeExtras hf dkMap env pos'
 
--- | Converts locations in the source code to their current positions,
--- taking into account changes that may have occurred due to edits.
-toCurrentLocation
-  :: PositionMapping
-  -> NormalizedFilePath
-  -> Location
-  -> IdeAction (Maybe Location)
+{- | Converts locations in the source code to their current positions,
+taking into account changes that may have occurred due to edits.
+-}
+toCurrentLocation ::
+    PositionMapping ->
+    NormalizedFilePath ->
+    Location ->
+    IdeAction (Maybe Location)
 toCurrentLocation mapping file (Location uri range) =
-  -- The Location we are going to might be in a different
-  -- file than the one we are calling gotoDefinition from.
-  -- So we check that the location file matches the file
-  -- we are in.
-  if nUri == normalizedFilePathToUri file
-  -- The Location matches the file, so use the PositionMapping
-  -- we have.
-  then pure $ Location uri <$> toCurrentRange mapping range
-  -- The Location does not match the file, so get the correct
-  -- PositionMapping and use that instead.
-  else do
-    otherLocationMapping <- fmap (fmap snd) $ runMaybeT $ do
-      otherLocationFile <- MaybeT $ pure $ uriToNormalizedFilePath nUri
-      useWithStaleFastMT GetHieAst otherLocationFile
-    pure $ Location uri <$> (flip toCurrentRange range =<< otherLocationMapping)
+    -- The Location we are going to might be in a different
+    -- file than the one we are calling gotoDefinition from.
+    -- So we check that the location file matches the file
+    -- we are in.
+    if nUri == normalizedFilePathToUri file
+        -- The Location matches the file, so use the PositionMapping
+        -- we have.
+        then pure $ Location uri <$> toCurrentRange mapping range
+        -- The Location does not match the file, so get the correct
+        -- PositionMapping and use that instead.
+        else do
+            otherLocationMapping <- fmap (fmap snd) $ runMaybeT $ do
+                otherLocationFile <- MaybeT $ pure $ uriToNormalizedFilePath nUri
+                useWithStaleFastMT GetHieAst otherLocationFile
+            pure $ Location uri <$> (flip toCurrentRange range =<< otherLocationMapping)
   where
     nUri :: NormalizedUri
     nUri = toNormalizedUri uri
@@ -89,33 +104,36 @@ toCurrentLocation mapping file (Location uri range) =
 -- | Goto Definition.
 getDefinition :: NormalizedFilePath -> Position -> IdeAction (Maybe [(Location, Identifier)])
 getDefinition file pos = runMaybeT $ do
-    ide@ShakeExtras{ withHieDb, hiedbWriter } <- ask
+    ide@ShakeExtras{withHieDb, hiedbWriter} <- ask
     opts <- liftIO $ getIdeOptionsIO ide
     (hf, mapping) <- useWithStaleFastMT GetHieAst file
     (ImportMap imports, _) <- useWithStaleFastMT GetImportMap file
     !pos' <- MaybeT (pure $ fromCurrentPosition mapping pos)
     locationsWithIdentifier <- AtPoint.gotoDefinition withHieDb (lookupMod hiedbWriter) opts imports hf pos'
-    mapMaybeM (\(location, identifier) -> do
-      fixedLocation <- MaybeT $ toCurrentLocation mapping file location
-      pure $ Just (fixedLocation, identifier)
-      ) locationsWithIdentifier
-
+    mapMaybeM
+        ( \(location, identifier) -> do
+            fixedLocation <- MaybeT $ toCurrentLocation mapping file location
+            pure $ Just (fixedLocation, identifier)
+        )
+        locationsWithIdentifier
 
 getTypeDefinition :: NormalizedFilePath -> Position -> IdeAction (Maybe [(Location, Identifier)])
 getTypeDefinition file pos = runMaybeT $ do
-    ide@ShakeExtras{ withHieDb, hiedbWriter } <- ask
+    ide@ShakeExtras{withHieDb, hiedbWriter} <- ask
     opts <- liftIO $ getIdeOptionsIO ide
     (hf, mapping) <- useWithStaleFastMT GetHieAst file
     !pos' <- MaybeT (return $ fromCurrentPosition mapping pos)
     locationsWithIdentifier <- AtPoint.gotoTypeDefinition withHieDb (lookupMod hiedbWriter) opts hf pos'
-    mapMaybeM (\(location, identifier) -> do
-      fixedLocation <- MaybeT $ toCurrentLocation mapping file location
-      pure $ Just (fixedLocation, identifier)
-      ) locationsWithIdentifier
+    mapMaybeM
+        ( \(location, identifier) -> do
+            fixedLocation <- MaybeT $ toCurrentLocation mapping file location
+            pure $ Just (fixedLocation, identifier)
+        )
+        locationsWithIdentifier
 
 getImplementationDefinition :: NormalizedFilePath -> Position -> IdeAction (Maybe [Location])
 getImplementationDefinition file pos = runMaybeT $ do
-    ide@ShakeExtras{ withHieDb, hiedbWriter } <- ask
+    ide@ShakeExtras{withHieDb, hiedbWriter} <- ask
     opts <- liftIO $ getIdeOptionsIO ide
     (hf, mapping) <- useWithStaleFastMT GetHieAst file
     !pos' <- MaybeT (pure $ fromCurrentPosition mapping pos)
@@ -124,10 +142,10 @@ getImplementationDefinition file pos = runMaybeT $ do
 
 highlightAtPoint :: NormalizedFilePath -> Position -> IdeAction (Maybe [DocumentHighlight])
 highlightAtPoint file pos = runMaybeT $ do
-    (HAR _ hf rf _ _,mapping) <- useWithStaleFastMT GetHieAst file
+    (HAR _ hf rf _ _, mapping) <- useWithStaleFastMT GetHieAst file
     !pos' <- MaybeT (return $ fromCurrentPosition mapping pos)
     let toCurrentHighlight (DocumentHighlight range t) = flip DocumentHighlight t <$> toCurrentRange mapping range
-    mapMaybe toCurrentHighlight <$>AtPoint.documentHighlight hf rf pos'
+    mapMaybe toCurrentHighlight <$> AtPoint.documentHighlight hf rf pos'
 
 -- Refs are not an IDE action, so it is OK to be slow and (more) accurate
 refsAtPoint :: NormalizedFilePath -> Position -> Action [Location]
@@ -137,8 +155,29 @@ refsAtPoint file pos = do
     asts <- HM.fromList . mapMaybe sequence . zip fs <$> usesWithStale GetHieAst fs
     AtPoint.referencesAtPoint withHieDb file pos (AtPoint.FOIReferences asts)
 
-workspaceSymbols :: T.Text -> IdeAction (Maybe [SymbolInformation])
-workspaceSymbols query = runMaybeT $ do
-  ShakeExtras{withHieDb} <- ask
-  res <- liftIO $ withHieDb (\hieDb -> HieDb.searchDef hieDb $ T.unpack query)
-  pure $ mapMaybe AtPoint.defRowToSymbolInfo res
+-- TODO(crtschin): What are the arguments here?
+workspaceDiagnostics :: IdeState -> Maybe T.Text -> [PreviousResultId] -> Action WorkspaceDiagnosticReport
+workspaceDiagnostics ide identifier previousResultIds = do
+    diagnostics <- liftIO $ atomically $ getDiagnostics ide
+    -- Probably better to not do this in one big STM block.
+    let fpToUri = fromNormalizedUri . normalizedFilePathToUri . fdFilePath
+        diagnosticsPerPath = Map.fromListWith (<>) $ map (\d -> (fpToUri d, [d])) diagnostics
+    WorkspaceDiagnosticReport <$> do
+        forM (Map.toList diagnosticsPerPath) $ \(uri, diagnostics) -> do
+            pure
+                . WorkspaceDocumentDiagnosticReport
+                . InL
+                $ WorkspaceFullDocumentDiagnosticReport
+                    AString
+                    -- TODO(crtschin): I don't know what this is, is it related to the identifier I'm ignoring
+                    Nothing
+                    (map fdLspDiagnostic diagnostics)
+                    uri
+                    -- TODO(crtschin): I don't know what this is.
+                    (InR Null)
+
+workspaceSymbols :: T.Text -> IdeAction [SymbolInformation]
+workspaceSymbols query = do
+    ShakeExtras{withHieDb} <- ask
+    res <- liftIO $ withHieDb (\hieDb -> HieDb.searchDef hieDb $ T.unpack query)
+    pure $ mapMaybe AtPoint.defRowToSymbolInfo res
