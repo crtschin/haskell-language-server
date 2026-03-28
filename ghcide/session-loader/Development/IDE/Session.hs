@@ -82,8 +82,9 @@ import           System.Info
 import           Control.Applicative                 (Alternative ((<|>)))
 import           Data.Void
 
-import           Control.Concurrent.STM.Stats        (atomically, modifyTVar',
-                                                      readTVar, writeTVar)
+import           Control.Concurrent.STM.Stats        (atomically, modifyTVar,
+                                                      modifyTVar', readTVar,
+                                                      retry, writeTVar)
 import           Control.Monad.Trans.Cont            (ContT (ContT, runContT))
 import           Data.Foldable                       (for_)
 import           Data.HashMap.Strict                 (HashMap)
@@ -105,12 +106,13 @@ import qualified System.Random                       as Random
 import           System.Random                       (RandomGen)
 import           Text.ParserCombinators.ReadP        (readP_to_S)
 
-import           Control.Concurrent.STM              (STM, TVar)
+import           Control.Concurrent.STM              (STM, TVar, newTVarIO)
 import qualified Control.Monad.STM                   as STM
 import           Control.Monad.Trans.Reader
 import qualified Development.IDE.Session.Ghc         as Ghc
 import qualified Development.IDE.Session.OrderedSet  as S
 import qualified Focus
+import           GHC.Conc                            (getNumProcessors)
 import qualified StmContainers.Map                   as STM
 
 data Log
@@ -359,15 +361,36 @@ runWithDb recorder fp = ContT $ \k -> do
     -- instantiate tyvar `a` to `()`
     let withWriteDbRetryable :: WithHieDb
         withWriteDbRetryable = makeWithHieDbRetryable recorder rng writedb
-    withWriteDbRetryable (setupHieDb . getConn)
-
 
     -- Clear the index of any files that might have been deleted since the last run
     _ <- withWriteDbRetryable deleteMissingRealFiles
     _ <- withWriteDbRetryable garbageCollectTypeNames
 
+    -- Number of read-only HieDb connections kept open in the pool.
+    -- More connections allow more concurrent readers but consume more file handles.
+    --
+    -- Default to using the same default hueristic in HLS for the number of
+    -- connections.
+    hieDbReaderPoolSize <- (`div` 2) <$> getNumProcessors
+    let withReaderPool = runContT $ sequence (replicate hieDbReaderPoolSize (ContT (withHieDb fp)))
+
     runContT (withWorkerQueue (cmapWithPrio LogSessionWorkerThread recorder) "hiedb thread" (writer withWriteDbRetryable))
-        $ \chan -> withHieDb fp (\readDb -> k (WithHieDbShield $ makeWithHieDbRetryable recorder rng readDb, chan))
+      $ \chan -> do
+        withReaderPool $ \readerPool -> do
+          readerPoolRef <- newTVarIO readerPool
+          let
+            acquireReader = do
+              atomically $ do
+                pool <- readTVar readerPoolRef
+                case pool of
+                  []            -> retry
+                  (readDb:rest) -> writeTVar readerPoolRef rest >> pure readDb
+            putBackReader readDb = atomically (modifyTVar readerPoolRef (readDb:))
+            withReader = WithHieDbShield $ \action ->
+              bracket acquireReader putBackReader $ \readDb ->
+                makeWithHieDbRetryable recorder rng readDb $ \readDb' ->
+                  action readDb'
+          k (withReader, chan)
   where
     writer withHieDbRetryable l = do
         -- TODO: probably should let exceptions be caught/logged/handled by top level handler
