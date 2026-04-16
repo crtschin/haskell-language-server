@@ -356,7 +356,7 @@ handleInit lifecycleCtx env (TRequestMessage _ _ m params) = otTracedHandler "In
 -- see Note [Serializing runs in separate thread]
 runWithWorkerThreads :: Recorder (WithPriority Session.Log) -> FilePath -> IO () -> (WithHieDb -> ThreadQueue -> IO ()) -> IO ()
 runWithWorkerThreads recorder dbLoc shutdownSession f = evalContT $ do
-  (WithHieDbShield hiedb, threadQueue) <- runWithDb recorder dbLoc
+  (WithHieDbShield hiedb, threadQueue) <- runWithDb recorder (cmapWithPrio Session.LogSessionWorkerThread recorder) dbLoc
   -- The shake session needs to be shut down prior to the hiedb connections
   -- being cleaned up, otherwise shake could be referencing dead connections.
   -- This is passed in via the callsites.

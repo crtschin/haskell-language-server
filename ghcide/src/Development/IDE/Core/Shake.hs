@@ -73,6 +73,7 @@ module Development.IDE.Core.Shake(
     addPersistentRule,
     garbageCollectDirtyKeys,
     garbageCollectDirtyKeysOlderThan,
+    writeIndexQueue,
     Log(..),
     VFSModified(..), getClientConfigAction,
     ThreadQueue(..),
@@ -259,9 +260,11 @@ data HieDbWriter
   }
 
 -- | Actions to queue up on the index worker thread
--- The inner `(HieDb -> IO ()) -> IO ()` wraps `HieDb -> IO ()`
--- with (currently) retry functionality
-type IndexQueue = TaskQueue (((HieDb -> IO ()) -> IO ()) -> IO ())
+type IndexQueue = TVar [HieDb -> IO ()]
+
+writeIndexQueue :: IndexQueue -> (HieDb -> IO ()) -> STM ()
+writeIndexQueue q task = modifyTVar' q (task :)
+
 type RestartQueue = TaskQueue (IO ())
 type LoaderQueue = TaskQueue (IO ())
 
@@ -672,9 +675,9 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
   ideTesting
   withHieDb threadQueue opts monitoring rules rootDir = mdo
     -- see Note [Serializing runs in separate thread]
-    let indexQueue = tIndexQueue threadQueue
-        restartQueue = tRestartQueue threadQueue
+    let restartQueue = tRestartQueue threadQueue
         loaderQueue = tLoaderQueue threadQueue
+        indexQueue = tIndexQueue threadQueue
 
 #if MIN_VERSION_ghc(9,13,0)
     ideNc <- newNameCache

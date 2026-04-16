@@ -30,16 +30,18 @@ import           Ide.Logger
 data LogWorkerThread
   = LogThreadEnding !T.Text
   | LogThreadEnded !T.Text
-  | LogSingleWorkStarting !T.Text
-  | LogSingleWorkEnded !T.Text
+  | LogCheckpoint !T.Text
+  | LogWorkStarting !T.Text
+  | LogWorkEnded !T.Text
   deriving (Show)
 
 instance Pretty LogWorkerThread where
   pretty = \case
     LogThreadEnding t -> "Worker thread ending:" <+> pretty t
     LogThreadEnded t -> "Worker thread ended:" <+> pretty t
-    LogSingleWorkStarting t -> "Worker starting a unit of work: " <+> pretty t
-    LogSingleWorkEnded t -> "Worker ended a unit of work: " <+> pretty t
+    LogCheckpoint t -> "Worker checkpoint:" <+> pretty t
+    LogWorkStarting t -> "Worker starting work: " <+> pretty t
+    LogWorkEnded t -> "Worker ended work: " <+> pretty t
 
 {-
 Note [Serializing runs in separate thread]
@@ -98,9 +100,9 @@ withWorkerQueue recorder title workerAction = ContT $ \mainAction -> do
         case task of
           Exit -> return ()
           Task t -> do
-                logWith recorder Debug $ LogSingleWorkStarting title
+                logWith recorder Debug $ LogWorkStarting title
                 workerAction t
-                logWith recorder Debug $ LogSingleWorkEnded title
+                logWith recorder Debug $ LogWorkEnded title
                 writerThread q b
 
 

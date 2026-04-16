@@ -106,6 +106,7 @@ import qualified System.Random                       as Random
 import           System.Random                       (RandomGen)
 import           Text.ParserCombinators.ReadP        (readP_to_S)
 
+import           Control.Concurrent.Async            (cancel, withAsync)
 import           Control.Concurrent.STM              (STM, TVar, newTVarIO)
 import qualified Control.Monad.STM                   as STM
 import           Control.Monad.Trans.Reader
@@ -339,13 +340,13 @@ makeWithHieDbRetryable recorder rng hieDb f =
   retryOnSqliteBusy recorder rng (f hieDb)
 
 -- | Wraps `withHieDb` to provide a database connection for reading, and a `HieWriterChan` for
--- writing. Actions are picked off one by one from the `HieWriterChan` and executed in serial
--- by a worker thread using a dedicated database connection.
+-- writing. Actions are picked off in batches from the `IndexQueue` and executed in serial
+-- by a worker thread using a dedicated database connection and a single transaction.
 -- This is done in order to serialize writes to the database, or else SQLite becomes unhappy
 --
 -- Also see Note [Serializing runs in separate thread]
-runWithDb :: Recorder (WithPriority Log) -> FilePath -> ContT () IO (WithHieDbShield, IndexQueue)
-runWithDb recorder fp = ContT $ \k -> do
+runWithDb :: Recorder (WithPriority Log) -> Recorder (WithPriority LogWorkerThread) -> FilePath -> ContT () IO (WithHieDbShield, IndexQueue)
+runWithDb recorder workerRecorder fp = ContT $ \k -> do
   -- use non-deterministic seed because maybe multiple HLS start at same time
   -- and send bursts of requests
   rng <- Random.newStdGen
@@ -363,43 +364,74 @@ runWithDb recorder fp = ContT $ \k -> do
         withWriteDbRetryable = makeWithHieDbRetryable recorder rng writedb
 
     -- Clear the index of any files that might have been deleted since the last run
-    _ <- withWriteDbRetryable deleteMissingRealFiles
-    _ <- withWriteDbRetryable garbageCollectTypeNames
+    withWriteDbRetryable $ \hieDb -> withTransaction (getConn hieDb) $ do
+        deleteMissingRealFilesNoTransaction hieDb
+        void $ garbageCollectTypeNames hieDb
+        checkpointHieDb (getConn hieDb)
 
-    -- Number of read-only HieDb connections kept open in the pool.
-    -- More connections allow more concurrent readers but consume more file handles.
-    --
-    -- Default to using the same default hueristic in HLS for the number of
-    -- connections.
-    hieDbReaderPoolSize <- (`div` 2) <$> getNumProcessors
-    let withReaderPool = runContT $ sequence (replicate hieDbReaderPoolSize (ContT (withHieDb fp)))
-
-    runContT (withWorkerQueue (cmapWithPrio LogSessionWorkerThread recorder) "hiedb thread" (writer withWriteDbRetryable))
-      $ \chan -> do
-        withReaderPool $ \readerPool -> do
-          readerPoolRef <- newTVarIO readerPool
-          let
-            acquireReader = do
-              atomically $ do
-                pool <- readTVar readerPoolRef
-                case pool of
-                  []            -> retry
-                  (readDb:rest) -> writeTVar readerPoolRef rest >> pure readDb
-            putBackReader readDb = atomically (modifyTVar readerPoolRef (readDb:))
-            withReader = WithHieDbShield $ \action ->
-              bracket acquireReader putBackReader $ \readDb ->
-                makeWithHieDbRetryable recorder rng readDb $ \readDb' ->
-                  action readDb'
-          k (withReader, chan)
+    chan <- newTVarIO []
+    withAsync (writerThread writedb chan WriterThreadIdle) $ \writerThread -> do
+      withReaderPool $ \readerPool -> do
+        readerPoolRef <- newTVarIO readerPool
+        let
+          acquireReader = atomically $ readTVar readerPoolRef
+            >>= \case
+              [] -> retry
+              (readDb:rest) -> writeTVar readerPoolRef rest *> pure readDb
+          putBackReader readDb = atomically (modifyTVar readerPoolRef (readDb:))
+          withReader = WithHieDbShield $ \action ->
+            bracket acquireReader putBackReader $ \readDb ->
+              makeWithHieDbRetryable recorder rng readDb $ \readDb' ->
+                action readDb'
+        k (withReader, chan) `finally` cancel writerThread
   where
-    writer withHieDbRetryable l = do
-        -- TODO: probably should let exceptions be caught/logged/handled by top level handler
-        l withHieDbRetryable
-          `Safe.catch` \e@SQLError{} -> do
-            logWith recorder Error $ LogHieDbWriterThreadSQLiteError e
-          `Safe.catchAny` \f -> do
-            logWith recorder Error $ LogHieDbWriterThreadException f
+    logWriterException = logWith recorder Error . LogHieDbWriterThreadException
+    hieDbReaderPoolSizeIO = (`div` 2) <$> getNumProcessors
+    withReaderPool act = do
+      hieDbReaderPoolSize <- hieDbReaderPoolSizeIO
+      runContT (sequence (replicate hieDbReaderPoolSize (ContT (withHieDb fp)))) act
 
+    -- Whenever we've done a few writes, we'll want to trigger a checkpoint so
+    -- the WAL gets truncated, and readers don't have to traverse it anymore.
+    --
+    -- The call to optimize is reasonably quick and ensures table statistics are
+    -- up to date, for the analyzer.
+    checkpointHieDb connection = do
+      let optimize = execute_ connection "PRAGMA wal_checkpoint(PASSIVE)"
+            *> execute_ connection "PRAGMA optimize"
+      Safe.tryAny optimize >>= \case
+        Left e -> logWriterException e
+        Right _ -> pure ()
+
+    writerThread writedb taskQueue writerState = do
+      let conn = getConn writedb
+      hasTasks <- atomically $ do
+        tasks <- readTVar taskQueue
+        case (writerState, tasks) of
+          (WriterThreadIdle, []) -> retry -- no task, wait
+          (WriterThreadActive, []) -> pure $ Nothing -- just executed tasks, checkpoint
+          (_, tasks) -> do
+            writeTVar taskQueue []
+            pure $ Just tasks -- should execute tasks
+
+      case hasTasks of
+        Nothing ->
+          checkpointHieDb conn
+            *> writerThread writedb taskQueue WriterThreadIdle
+        Just tasks -> do
+          logWith workerRecorder Debug $ LogWorkStarting "hiedb thread"
+          -- Only initiate a single transaction for any batch of work so we
+          -- don't unnecessarily issue fsync's.
+          let processTasks = withTransaction conn $ for_ tasks $ \task ->
+                task writedb `Safe.catchAny` logWriterException
+
+          processTasks `Safe.catchAny` logWriterException
+          logWith workerRecorder Debug $ LogWorkEnded "hiedb thread"
+          writerThread writedb taskQueue WriterThreadActive
+
+data WriterThreadState
+  = WriterThreadIdle
+  | WriterThreadActive
 
 getHieDbLoc :: FilePath -> IO FilePath
 getHieDbLoc dir = do
