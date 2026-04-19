@@ -20,14 +20,6 @@ flag pedantic
   default:     False
   manual:      True
 
--- This flag can be used to avoid the dependency on hw-fingertree.
--- We can set this temporarily if we have problems building hw-fingertree
--- for a new version of GHC.
-flag use-fingertree
-  description: Use fingertree implementation of RangeMap
-  default:     True
-  manual:      False
-
 source-repository head
   type:     git
   location: https://github.com/haskell/haskell-language-server
@@ -64,6 +56,7 @@ library
     , dlist
     , extra
     , filepath
+    , fingertree
     , ghc
     , hashable
     , hls-graph             == 2.13.0.0
@@ -91,10 +84,6 @@ library
 
   if flag(pedantic)
     ghc-options: -Werror
-
-  if flag(use-fingertree)
-    cpp-options:   -DUSE_FINGERTREE
-    build-depends: hw-fingertree
 
   default-language:   GHC2021
   default-extensions:
@@ -129,10 +118,6 @@ test-suite tests
 
 benchmark rangemap-benchmark
   import: warnings
-  -- Benchmark doesn't make sense if fingertree implementation
-  -- is not used.
-  if !flag(use-fingertree)
-    buildable: False
 
   type:             exitcode-stdio-1.0
   default-language: GHC2021

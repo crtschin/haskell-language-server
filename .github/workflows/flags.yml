@@ -78,7 +78,7 @@ jobs:
               --constraint "haskell-language-server +pedantic" \
               --constraint "hls-graph +embed-files +pedantic +stm-stats" \
               --constraint "ghcide +ekg +executable +test-exe" \
-              --constraint "hls-plugin-api +pedantic -use-fingertree"
+              --constraint "hls-plugin-api +pedantic"
           cat cabal.project.local
 
       - name: Build everything with non-default flags
