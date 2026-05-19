@@ -1,0 +1,10 @@
+cradle:
+  direct:
+    arguments:
+      - AddExport
+      - AddCtor
+      - AddClass
+      - Implicit
+      - RemoveExport
+      - RemoveCtor
+      - RemoveClass
