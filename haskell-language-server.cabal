@@ -1761,6 +1761,57 @@ test-suite hls-notes-plugin-tests
     , hls-test-utils == 2.14.0.0
   default-extensions: OverloadedStrings
 
+-----------------------------
+-- export plugin
+-----------------------------
+
+flag export
+  description: Enable export plugin
+  default:     True
+  manual:      True
+
+common export
+  if flag(export)
+    build-depends: haskell-language-server:hls-export-plugin
+    cpp-options: -Dhls_export
+
+library hls-export-plugin
+  import: defaults, pedantic, warnings
+  if !flag(export)
+    buildable: False
+  exposed-modules:
+    Ide.Plugin.Export
+  other-modules:
+    Ide.Plugin.Export.Cursor
+    Ide.Plugin.Export.Exports
+  hs-source-dirs:     plugins/hls-export-plugin/src
+  build-depends:
+    , containers
+    , ghcide          == 2.14.0.0
+    , hls-plugin-api  == 2.14.0.0
+    , lens
+    , lsp >=2.8
+    , text
+  default-extensions:
+      DataKinds
+    , OverloadedStrings
+
+test-suite hls-export-plugin-tests
+  import:           defaults, pedantic, test-defaults, warnings
+  if !flag(export)
+    buildable: False
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   plugins/hls-export-plugin/test
+  main-is:          Main.hs
+  build-depends:
+    , filepath
+    , haskell-language-server:hls-export-plugin
+    , hls-test-utils == 2.14.0.0
+    , lens
+    , lsp-types
+    , text
+  default-extensions: OverloadedStrings
+
 ----------------------------
 ----------------------------
 -- HLS
@@ -1799,6 +1850,7 @@ library
                   , overloadedRecordDot
                   , semanticTokens
                   , notes
+                  , export
 
   exposed-modules:
     Ide.Arguments
