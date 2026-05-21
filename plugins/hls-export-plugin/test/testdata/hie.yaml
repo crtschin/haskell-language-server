@@ -8,3 +8,7 @@ cradle:
       - RemoveExport
       - RemoveCtor
       - RemoveClass
+      - MakeExplicitUsed
+      - UsesMakeExplicitUsed
+      - RefineExports
+      - UsesRefineExports

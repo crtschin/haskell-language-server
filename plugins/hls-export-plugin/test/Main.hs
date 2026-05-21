@@ -2,11 +2,14 @@ module Main (main) where
 
 import           Control.Lens               ((^.))
 import           Data.Either                (rights)
-import           Data.List                  (sort)
+import           Data.Foldable              (find)
+import           Data.List                  (sort, tails)
 import qualified Data.Text                  as T
+import           Development.IDE.Test       (referenceReady)
 import           Ide.Plugin.Export          (Log, descriptor)
 import qualified Language.LSP.Protocol.Lens as L
-import           System.FilePath            ((</>))
+import           System.FilePath            (equalFilePath, joinPath,
+                                             splitDirectories, (</>))
 import           Test.Hls
 
 plugin :: PluginTestDescriptor Log
@@ -21,6 +24,20 @@ runExport act =
         { testDirLocation = Left testDataDir
         , testPluginDescriptor = plugin
         } act
+
+runExportResolve :: (FilePath -> Session a) -> IO a
+runExportResolve act =
+    runSessionWithTestConfig def
+        { testDirLocation = Left testDataDir
+        , testPluginDescriptor = plugin
+        , testConfigCaps = codeActionResolveCaps
+        } act
+
+waitForIndex :: FilePath -> Session ()
+waitForIndex fp1 = skipManyTill anyMessage $ () <$ referenceReady suffixMatch
+  where
+    suffixMatch fp2 =
+      any (equalFilePath fp1 . joinPath) (tails (splitDirectories fp2))
 
 codeActionTitles :: TextDocumentIdentifier -> Range -> Session [T.Text]
 codeActionTitles doc range =
@@ -260,4 +277,54 @@ main = defaultTestRunner $ testGroup "Export"
             waitForKickDone
             noRemoveOffered doc (rangeAt 3 6)  -- on the `1` of `foo = 1`
         ]
+
+    , testGroup "Export explicitly"
+        [ testCase "implicit module: exports only externally-referenced names" $ runExportResolve $ \_dir -> do
+            _consumer <- openDoc "UsesMakeExplicitUsed.hs" "haskell"
+            target    <- openDoc "MakeExplicitUsed.hs" "haskell"
+            waitForIndex "UsesMakeExplicitUsed.hs"
+            runExplicitAction target (rangeAt 0 7)
+            contents <- documentContents target
+            let header = exportHeader contents
+            liftIO $ all (`T.isInfixOf` header) ["usedByOther", "T (..)"]
+                @? ("Expected both usedByOther and T (..) in header:\n" <> T.unpack header)
+            liftIO $ not ("usedOnlyInternally" `T.isInfixOf` header)
+                @? ("usedOnlyInternally should not be exported:\n" <> T.unpack header)
+            liftIO $ not ("unusedEntirely" `T.isInfixOf` header)
+                @? ("unusedEntirely should not be exported:\n" <> T.unpack header)
+
+        , testCase "explicit module: refines list to externally-referenced names" $ runExportResolve $ \_dir -> do
+            _consumer <- openDoc "UsesRefineExports.hs" "haskell"
+            target    <- openDoc "RefineExports.hs" "haskell"
+            waitForIndex "UsesRefineExports.hs"
+            runExplicitAction target (rangeAt 0 7)
+            contents <- documentContents target
+            let header = exportHeader contents
+            liftIO $ all (`T.isInfixOf` header) ["used", "T (..)"]
+                @? ("Expected both used and T (..) in header:\n" <> T.unpack header)
+            liftIO $ not ("unused" `T.isInfixOf` header)
+                @? ("unused should not be exported:\n" <> T.unpack header)
+            liftIO $ not ("UnusedT" `T.isInfixOf` header)
+                @? ("UnusedT should not be exported:\n" <> T.unpack header)
+
+        , testCase "no action when cursor is off the module header" $ runExportResolve $ \_dir -> do
+            doc <- openDoc "MakeExplicitUsed.hs" "haskell"
+            waitForKickDone
+            titles <- codeActionTitles doc (rangeAt 3 0)  -- on `usedByOther`
+            liftIO $ "Export explicitly" `notElem` titles
+                @? ("Did not expect Export explicitly action, saw: " <> show titles)
+        ]
     ]
+
+runExplicitAction :: TextDocumentIdentifier -> Range -> Session ()
+runExplicitAction doc range = do
+    actions <- rights . map toEither <$> getCodeActions doc range
+    case find ((== "Export explicitly") . (^. L.title)) actions of
+        Just ca -> do
+            resolved <- resolveCodeAction ca
+            executeCodeAction resolved
+        Nothing -> liftIO $ assertFailure $
+            "Export explicitly action not offered, saw: " <> show (map (^. L.title) actions)
+
+exportHeader :: T.Text -> T.Text
+exportHeader = T.takeWhile (/= '\n')
