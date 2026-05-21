@@ -113,14 +113,14 @@ bytestringToStringBuffer :: ByteString -> StringBuffer
 bytestringToStringBuffer (PS buf cur len) = StringBuffer{..}
 
 -- | Pretty print a 'RdrName' wrapping operators in parens
-printRdrName :: RdrName -> String
-printRdrName name = T.unpack $ printOutputable $ parenSymOcc rn (ppr rn)
+printRdrName :: RdrName -> T.Text
+printRdrName name = printOutputable $ parenSymOcc rn (ppr rn)
   where
     rn = rdrNameOcc name
 
 -- | Pretty print a 'Name' wrapping operators in parens
 printName :: Name -> String
-printName = printRdrName . nameRdrName
+printName = T.unpack . printRdrName . nameRdrName
 
 -- | Run a 'Ghc' monad value using an existing 'HscEnv'. Sets up and tears down all the required
 --   pieces, but designed to be more efficient than a standard 'runGhc'.

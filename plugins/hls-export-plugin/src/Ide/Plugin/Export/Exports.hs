@@ -6,10 +6,11 @@ module Ide.Plugin.Export.Exports
   ( isExplicit
   , isExported
   , addExport
+  , addExportList
+  , setExportList
   , addConstructorExport
   , removeExport
   , removeConstructorExport
-  , rdrNameText
   )
 where
 
@@ -74,6 +75,21 @@ parentEntryInfo parent ps = do
         Just r <- srcSpanToRange (locA l) =
           Just (r, ie)
       | otherwise = findEntry rest
+
+-- | Inserts @" (body)"@ after the module name.
+addExportList :: ParsedSource -> Text -> Maybe [TextEdit]
+addExportList ps body = do
+  lmodName <- hsmodName (unLoc ps)
+  Range _ end <- srcSpanToRange (locA (getLoc lmodName))
+  Just [TextEdit (Range end end) (" (" <> body <> ")")]
+
+-- | Inserts or replaces the export list, depending on whether one exists.
+setExportList :: ParsedSource -> Text -> Maybe [TextEdit]
+setExportList ps body = case hsmodExports (unLoc ps) of
+  Nothing -> addExportList ps body
+  Just (L lloc _) -> do
+    r <- srcSpanToRange (locA lloc)
+    Just [TextEdit r ("(" <> body <> ")")]
 
 -- | Appends @name@ verbatim after the last entry; callers pre-format suffixes such as @\"T (..)\"@.
 addExport :: ParsedSource -> Text -> Maybe [TextEdit]
@@ -158,20 +174,3 @@ removeConstructorExport parent ctor ps = do
           Range _ prevEnd <- srcSpanToRange (locA prevLoc)
           let Range _ end = childRange
           Just (Range prevEnd end)
-
-rdrNameText :: RdrName -> Text
-rdrNameText = T.pack . printRdrName
-
-ieParentName :: IE GhcPs -> Maybe RdrName
-ieParentName = \case
-  IEVar _ (L _ wn) _           -> Just (ieWrappedRdrName wn)
-  IEThingAbs _ (L _ wn) _      -> Just (ieWrappedRdrName wn)
-  IEThingAll _ (L _ wn) _      -> Just (ieWrappedRdrName wn)
-  IEThingWith _ (L _ wn) _ _ _ -> Just (ieWrappedRdrName wn)
-  _                            -> Nothing
-
-ieWrappedRdrName :: IEWrappedName GhcPs -> RdrName
-ieWrappedRdrName = \case
-  IEName _ (L _ rdr)    -> rdr
-  IEPattern _ (L _ rdr) -> rdr
-  IEType _ (L _ rdr)    -> rdr

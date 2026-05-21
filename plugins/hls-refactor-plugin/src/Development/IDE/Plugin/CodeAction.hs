@@ -1320,7 +1320,7 @@ suggestImplicitParameter (L _ HsModule {hsmodDecls}) Diagnostic {_message, _rang
     Just (TypeSig _ _ HsWC {hswc_body = (unLoc -> HsSig {sig_body = hsib_body})})
       <- findSigOfDecl (== funId) hsmodDecls
     =
-      [( "Add " <> implicitT <> " to the context of " <> T.pack (printRdrName funId)
+      [( "Add " <> implicitT <> " to the context of " <> printRdrName funId
         , appendConstraint (T.unpack implicitT) hsib_body)]
   | otherwise = []
 

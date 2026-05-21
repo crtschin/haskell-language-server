@@ -2,6 +2,8 @@
 
 module Ide.Plugin.Export.Cursor (UnderCursor (..), locateUnderCursor) where
 
+import           Control.Applicative        ((<|>))
+import           Control.Monad              (join)
 import           Data.Foldable              (toList)
 import           Data.List                  (find)
 import           Data.Maybe
@@ -12,16 +14,25 @@ data UnderCursor
   = ValueOrSig RdrName
   | TypeDecl RdrName
   | Constructor RdrName RdrName
+  | Header
 
 locateUnderCursor :: Position -> ParsedSource -> Maybe UnderCursor
-locateUnderCursor pos ps = do
-  L _ decl <- find (\(L l _) -> pos `isInsideSrcSpan` locA l) (hsmodDecls (unLoc ps))
-  classify pos decl
+locateUnderCursor pos ps = classifyHeader pos (unLoc ps) <|> classifyInDecl
+  where
+    classifyInDecl = do
+      L _ decl <- find (\(L l _) -> pos `isInsideSrcSpan` locA l) (hsmodDecls (unLoc ps))
+      classifyDecl pos decl
 
--- | Only fires when the cursor is on the symbol name itself, not anywhere
--- else inside the declaration's source span.
-classify :: Position -> HsDecl GhcPs -> Maybe UnderCursor
-classify pos = \case
+-- | Match column-free so cursor anywhere on the @module ... where@ line counts.
+classifyHeader :: Position -> HsModule GhcPs -> Maybe UnderCursor
+classifyHeader pos mod = do
+  let isIn el = join $ fmap (\n -> if pos `isInsideSrcSpanLines` locA n then Just Header else Nothing) el
+      inName = isIn $ hsmodName mod
+      inExports = isIn $ hsmodExports mod
+  inName <|> inExports
+
+classifyDecl :: Position -> HsDecl GhcPs -> Maybe UnderCursor
+classifyDecl pos = \case
   ValD _ FunBind {fun_id = lname}
     | onName lname -> Just (ValueOrSig (unLoc lname))
   SigD _ (TypeSig _ names _) ->

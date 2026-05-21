@@ -34,7 +34,7 @@ module Development.IDE.GHC.Error
   , noSpan
 
   -- * utilities working with severities
-  , toDSeverity
+  , toDSeverity, isInsideSrcSpanLines
   ) where
 
 import           Control.Lens
@@ -171,6 +171,11 @@ isInsideSrcSpan :: Position -> SrcSpan -> Bool
 p `isInsideSrcSpan` r = case srcSpanToRange r of
   Just (Range sp ep) -> sp <= p && p <= ep
   _                  -> False
+
+isInsideSrcSpanLines :: Position -> SrcSpan -> Bool
+Position l _ `isInsideSrcSpanLines` r = case srcSpanToRange r of
+  Just (Range (Position sl _) (Position el _)) -> sl <= l && l <= el
+  _                                            -> False
 
 -- Returns Nothing if the SrcSpan does not represent a valid range
 spanContainsRange :: SrcSpan -> Range -> Maybe Bool
