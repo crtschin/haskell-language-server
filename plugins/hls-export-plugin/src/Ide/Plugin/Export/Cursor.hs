@@ -3,7 +3,6 @@
 module Ide.Plugin.Export.Cursor (UnderCursor (..), locateUnderCursor) where
 
 import           Control.Applicative        ((<|>))
-import           Control.Monad              (join)
 import           Data.Foldable              (toList)
 import           Data.List                  (find)
 import           Data.Maybe
@@ -25,11 +24,12 @@ locateUnderCursor pos ps = classifyHeader pos (unLoc ps) <|> classifyInDecl
 
 -- | Match column-free so cursor anywhere on the @module ... where@ line counts.
 classifyHeader :: Position -> HsModule GhcPs -> Maybe UnderCursor
-classifyHeader pos mod = do
-  let isIn el = join $ fmap (\n -> if pos `isInsideSrcSpanLines` locA n then Just Header else Nothing) el
-      inName = isIn $ hsmodName mod
-      inExports = isIn $ hsmodExports mod
-  inName <|> inExports
+classifyHeader pos mod = inName <|> inExports
+  where
+    isIn :: HasSrcSpan a => Maybe a -> Maybe UnderCursor
+    isIn el = el >>= \n -> if pos `isInsideSrcSpanLines` getLoc n then Just Header else Nothing
+    inName = isIn $ hsmodName mod
+    inExports = isIn $ hsmodExports mod
 
 classifyDecl :: Position -> HsDecl GhcPs -> Maybe UnderCursor
 classifyDecl pos = \case

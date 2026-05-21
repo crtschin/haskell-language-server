@@ -286,8 +286,10 @@ main = defaultTestRunner $ testGroup "Export"
             runExplicitAction target (rangeAt 0 7)
             contents <- documentContents target
             let header = exportHeader contents
-            liftIO $ all (`T.isInfixOf` header) ["usedByOther", "T (..)"]
-                @? ("Expected both usedByOther and T (..) in header:\n" <> T.unpack header)
+            liftIO $ any (`T.isInfixOf` header) ["usedByOther, T (..)", "T (..), usedByOther"]
+                @? ("Expected usedByOther and T (..) separated by comma+space in header:\n" <> T.unpack header)
+            liftIO $ not (",)" `T.isInfixOf` header)
+                @? ("Export list should not end with a trailing comma:\n" <> T.unpack header)
             liftIO $ not ("usedOnlyInternally" `T.isInfixOf` header)
                 @? ("usedOnlyInternally should not be exported:\n" <> T.unpack header)
             liftIO $ not ("unusedEntirely" `T.isInfixOf` header)
@@ -300,8 +302,10 @@ main = defaultTestRunner $ testGroup "Export"
             runExplicitAction target (rangeAt 0 7)
             contents <- documentContents target
             let header = exportHeader contents
-            liftIO $ all (`T.isInfixOf` header) ["used", "T (..)"]
-                @? ("Expected both used and T (..) in header:\n" <> T.unpack header)
+            liftIO $ any (`T.isInfixOf` header) ["used, T (..)", "T (..), used"]
+                @? ("Expected used and T (..) separated by comma+space in header:\n" <> T.unpack header)
+            liftIO $ not (",)" `T.isInfixOf` header)
+                @? ("Export list should not end with a trailing comma:\n" <> T.unpack header)
             liftIO $ not ("unused" `T.isInfixOf` header)
                 @? ("unused should not be exported:\n" <> T.unpack header)
             liftIO $ not ("UnusedT" `T.isInfixOf` header)

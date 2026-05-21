@@ -10,20 +10,18 @@ import           Control.Monad.Error.Class        (throwError)
 import           Control.Monad.IO.Class           (liftIO)
 import           Data.Aeson                       (toJSON)
 import qualified Data.Map.Strict                  as Map
+import           Data.Maybe                       (mapMaybe)
 import           Data.Text                        (Text)
-import qualified Data.Text                        as T
 import           Development.IDE
 import           Development.IDE.Core.PluginUtils (runActionE, useE)
 import           Development.IDE.Core.Shake       (ShakeExtras (..))
 import qualified Development.IDE.Core.Shake       as Shake
 import           Development.IDE.GHC.Compat
-import           Development.IDE.Types.Shake      (WithHieDb)
-import           HieDb                            (findReferences)
 import           Ide.Plugin.Error                 (PluginError (..),
                                                    getNormalizedFilePathE)
 import           Ide.Plugin.Export.Cursor
+import           Ide.Plugin.Export.ExactPrint
 import           Ide.Plugin.Export.Exports
-import           Ide.Plugin.Export.Utils
 import           Ide.Plugin.Resolve
 import           Ide.Types
 import qualified Ide.Types                        as Ide
@@ -75,31 +73,13 @@ explicitExportCodeActionResolveProvider state _pId ca uri () = do
       avails = tcg_exports (tmrTypechecked tmr)
       excludeFp = [fromNormalizedFilePath nfp]
       hieDb = withHieDb (shakeExtras state)
-  used <- liftIO $ filterM (availIsReferencedExternally hieDb excludeFp) avails
-  let body = T.intercalate ", " (filter (not . T.null) (map renderAvail used))
-  case setExportList ps body of
+  used <- liftIO $ filterM (isReferencedExternally hieDb excludeFp) avails
+  let items = mapMaybe availToLIE used
+  case setExportList ps items of
     Just edits ->
       pure $ ca & L.edit ?~ WorkspaceEdit (Just (Map.singleton uri edits)) Nothing Nothing
     Nothing ->
       throwError $ PluginInternalError "Export.Resolve: cannot locate module name span"
-
-availIsReferencedExternally :: WithHieDb -> [FilePath] -> AvailInfo -> IO Bool
-availIsReferencedExternally withDb exclude avail = do
-  let n = availName avail
-  case nameModule_maybe n of
-    Nothing  -> pure False
-    Just modl -> do
-      rows <- withDb $ \db ->
-        findReferences db True (nameOccName n) (Just (moduleName modl)) (Just (moduleUnit modl)) exclude
-      pure (not (null rows))
-
-renderAvail :: AvailInfo -> Text
-renderAvail = \case
-  AvailName n -> T.pack (printName n)
-  AvailTC parent names _
-    | null (filter (/= parent) names) -> T.pack (printName parent)
-    | otherwise -> T.pack (printName parent) <> " (..)"
-  AvailFL _ -> ""
 
 quickCodeActionHandlers :: PluginMethodHandler IdeState Method_TextDocumentCodeAction
 quickCodeActionHandlers state _plId (CodeActionParams _ _ doc range _) = do

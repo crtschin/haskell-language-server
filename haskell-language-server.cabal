@@ -1783,12 +1783,15 @@ library hls-export-plugin
     Ide.Plugin.Export
   other-modules:
     Ide.Plugin.Export.Cursor
+    Ide.Plugin.Export.ExactPrint
     Ide.Plugin.Export.Exports
     Ide.Plugin.Export.Utils
   hs-source-dirs:     plugins/hls-export-plugin/src
   build-depends:
     , aeson
     , containers
+    , ghc
+    , ghc-exactprint
     , ghcide          == 2.14.0.0
     , hiedb           ^>= 0.8.0.0
     , hls-plugin-api  == 2.14.0.0
