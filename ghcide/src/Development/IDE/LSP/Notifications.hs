@@ -15,9 +15,11 @@ import qualified Language.LSP.Protocol.Message         as LSP
 import           Language.LSP.Protocol.Types
 import qualified Language.LSP.Protocol.Types           as LSP
 
-import           Control.Concurrent.STM.Stats          (atomically)
+import           Control.Concurrent.STM.Stats          (atomically, readTVar,
+                                                        writeTVar)
 import           Control.Monad.Extra
 import           Control.Monad.IO.Class
+import           Data.Hashable                         (mapHashed)
 import qualified Data.HashMap.Strict                   as HM
 import qualified Data.HashSet                          as S
 import qualified Data.Text                             as Text
@@ -30,10 +32,13 @@ import           Development.IDE.Core.FileStore        (registerFileWatches,
 import qualified Development.IDE.Core.FileStore        as FileStore
 import           Development.IDE.Core.IdeConfiguration
 import           Development.IDE.Core.OfInterest       hiding (Log, LogShake)
+import           Development.IDE.Core.RuleTypes        (GetKnownTargets (..))
 import           Development.IDE.Core.Service          hiding (Log, LogShake)
 import           Development.IDE.Core.Shake            hiding (Log)
 import qualified Development.IDE.Core.Shake            as Shake
+import           Development.IDE.Graph                 (Key)
 import           Development.IDE.Types.Location
+import           Development.IDE.Types.Shake           (toNoFileKey)
 import           Ide.Logger
 import           Ide.Types
 import           Numeric.Natural
@@ -62,6 +67,22 @@ instance Pretty Log where
 
 whenUriFile :: Uri -> (NormalizedFilePath -> IO ()) -> IO ()
 whenUriFile uri act = whenJust (LSP.uriToFilePath uri) $ act . toNormalizedFilePath'
+
+-- On-disk creates/deletes of source files don't propagate to KnownTargets
+-- otherwise; see Note [File existence cache and LSP file watchers].
+updateKnownTargetsFromWatch :: IdeState -> [(NormalizedFilePath, FileChangeType)] -> IO [Key]
+updateKnownTargetsFromWatch ide events
+  | null adds && S.null dels = pure []
+  | otherwise = do
+      atomically $ do
+        k <- readTVar var
+        writeTVar var (mapHashed (removeFromKnownTargets dels . unionKnownTargets addsKT) k)
+      pure [toNoFileKey GetKnownTargets]
+  where
+    var = knownTargetsVar (shakeExtras ide)
+    adds = [fp | (fp, FileChangeType_Created) <- events]
+    dels = S.fromList [fp | (fp, FileChangeType_Deleted) <- events]
+    addsKT = mkKnownTargets [(TargetFile fp, S.singleton fp) | fp <- adds]
 
 descriptor :: Recorder (WithPriority Log) -> PluginId -> PluginDescriptor IdeState
 descriptor recorder plId = (defaultPluginDescriptor plId desc) { pluginNotificationHandlers = mconcat
@@ -118,7 +139,8 @@ descriptor recorder plId = (defaultPluginDescriptor plId desc) { pluginNotificat
             setSomethingModified (VFSModified vfs) ide msg $ do
                 ks1 <- resetFileStore ide fileEvents'
                 ks2 <- modifyFileExists ide fileEvents'
-                return (ks1 <> ks2)
+                ks3 <- updateKnownTargetsFromWatch ide fileEvents'
+                return (ks1 <> ks2 <> ks3)
 
   , mkPluginNotificationHandler LSP.SMethod_WorkspaceDidChangeWorkspaceFolders $
       \ide _ _ (DidChangeWorkspaceFoldersParams events) -> liftIO $ do

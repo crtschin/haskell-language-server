@@ -4,6 +4,7 @@ module Development.IDE.Types.KnownTargets ( KnownTargets(..)
                                           , emptyKnownTargets
                                           , mkKnownTargets
                                           , unionKnownTargets
+                                          , removeFromKnownTargets
                                           , Target(..)
                                           , toKnownFiles) where
 
@@ -30,6 +31,15 @@ unionKnownTargets (KnownTargets tm) (KnownTargets tm') =
 
 mkKnownTargets :: [(Target, HashSet NormalizedFilePath)] -> KnownTargets
 mkKnownTargets vs = KnownTargets (HMap.fromList vs)
+
+removeFromKnownTargets :: HashSet NormalizedFilePath -> KnownTargets -> KnownTargets
+removeFromKnownTargets toRemove (KnownTargets tm) =
+  KnownTargets (HMap.mapMaybeWithKey prune tm)
+  where
+    prune (TargetFile fp) _ | HSet.member fp toRemove = Nothing
+    prune _ paths =
+      let paths' = HSet.difference paths toRemove
+      in if HSet.null paths' then Nothing else Just paths'
 
 instance NFData KnownTargets where
   rnf (KnownTargets tm) = rnf tm `seq` ()

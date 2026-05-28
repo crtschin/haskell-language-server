@@ -12,6 +12,7 @@ module Development.IDE.Plugin.Test
   ) where
 
 import           Control.Concurrent                   (threadDelay)
+import           Control.Concurrent.STM               (readTVar)
 import qualified Control.Exception                    as E
 import           Control.Monad
 import           Control.Monad.Except                 (ExceptT (..), throwError)
@@ -23,6 +24,7 @@ import           Data.Aeson                           (FromJSON (parseJSON),
 import qualified Data.Aeson.Types                     as A
 import           Data.Bifunctor
 import           Data.CaseInsensitive                 (CI, original)
+import           Data.Hashable                        (unhashed)
 import qualified Data.HashMap.Strict                  as HM
 import qualified Data.HashSet                         as Set
 import           Data.Maybe                           (isJust)
@@ -73,6 +75,7 @@ data TestRequest
     | GetStoredKeys                  -- ^ :: [String] (list of keys in store)
     | GetFilesOfInterest             -- ^ :: [FilePath]
     | GetRebuildsCount               -- ^ :: Int (number of times we recompiled with GHC)
+    | GetKnownTargetsList            -- ^ :: [FilePath] (files currently in KnownTargets)
     deriving Generic
     deriving anyclass (FromJSON, ToJSON)
 
@@ -154,6 +157,10 @@ testRequestHandler s GetFilesOfInterest = do
 testRequestHandler s GetRebuildsCount = do
     count <- liftIO $ runAction "get build count" s getRebuildCount
     return $ Right $ toJSON count
+testRequestHandler s GetKnownTargetsList = liftIO $ do
+    let var = knownTargetsVar (shakeExtras s)
+    kt <- unhashed <$> atomically (readTVar var)
+    return $ Right $ toJSON $ map fromNormalizedFilePath $ Set.toList $ toKnownFiles kt
 
 getDatabaseKeys :: (Graph.Result -> Step)
     -> ShakeDatabase

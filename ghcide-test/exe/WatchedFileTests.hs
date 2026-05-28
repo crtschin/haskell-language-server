@@ -1,5 +1,7 @@
 
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE DataKinds        #-}
+{-# LANGUAGE GADTs            #-}
+{-# LANGUAGE TypeApplications #-}
 
 module WatchedFileTests (tests) where
 
@@ -9,9 +11,13 @@ import           Config                          (mkIdeTestFs,
 import           Control.Applicative.Combinators
 import           Control.Monad.IO.Class          (liftIO)
 import qualified Data.Aeson                      as A
+import           Data.List                       (isSuffixOf)
+import           Data.Proxy                      (Proxy (..))
 import qualified Data.Text                       as T
 import qualified Data.Text.IO                    as T
-import           Development.IDE.Test            (expectDiagnostics)
+import           Development.IDE.Plugin.Test     (TestRequest (..))
+import           Development.IDE.Test            (expectDiagnostics,
+                                                  waitForTypecheck)
 import           Language.LSP.Protocol.Message
 import           Language.LSP.Protocol.Types     hiding
                                                  (SemanticTokenAbsolute (..),
@@ -73,6 +79,53 @@ tests = testGroup "watched files"
         sendNotification SMethod_WorkspaceDidChangeWatchedFiles $ DidChangeWatchedFilesParams
                [FileEvent (filePathToUri $ sessionDir </> "B.hs") FileChangeType_Changed ]
         expectDiagnostics [("A.hs", [(DiagnosticSeverity_Error, (3, 4), "Couldn't match expected type '()' with actual type 'Int'", Just "GHC-83865")])]
+      , testWithDummyPluginEmpty' "on-disk create updates KnownTargets" $ \sessionDir -> do
+          liftIO $ atomicFileWriteString (sessionDir </> "hie.yaml") "cradle: {direct: {arguments: [\"-isrc\", \"A\", \"B\"]}}"
+          _doc <- createDoc "A.hs" "haskell" $ T.unlines
+            ["module A where"
+            ,"import B"
+            ,"a :: ()"
+            ,"a = b"
+            ]
+          expectDiagnostics [("A.hs", [(DiagnosticSeverity_Error, (1, 7), "Could not find module", Nothing)])]
+          kt0 <- knownTargetsFiles
+          liftIO $ assertBool ("B.hs not expected in KnownTargets initially: " <> show kt0)
+            (not $ any ("B.hs" `isSuffixOf`) kt0)
+          liftIO $ atomicFileWriteString (sessionDir </> "B.hs") $ unlines
+            ["module B where"
+            ,"b :: ()"
+            ,"b = ()"
+            ]
+          sendNotification SMethod_WorkspaceDidChangeWatchedFiles $ DidChangeWatchedFilesParams
+            [ FileEvent (filePathToUri $ sessionDir </> "B.hs") FileChangeType_Created ]
+          expectDiagnostics [("A.hs", [])]
+          kt1 <- knownTargetsFiles
+          liftIO $ assertBool ("B.hs expected in KnownTargets after create: " <> show kt1)
+            (any ("B.hs" `isSuffixOf`) kt1)
+      , testWithDummyPluginEmpty' "on-disk delete updates KnownTargets" $ \sessionDir -> do
+          liftIO $ atomicFileWriteString (sessionDir </> "hie.yaml") "cradle: {direct: {arguments: [\"-isrc\", \"A\", \"B\"]}}"
+          liftIO $ atomicFileWriteString (sessionDir </> "B.hs") $ unlines
+            ["module B where"
+            ,"b :: ()"
+            ,"b = ()"
+            ]
+          doc <- createDoc "A.hs" "haskell" $ T.unlines
+            ["module A where"
+            ,"import B"
+            ,"a :: ()"
+            ,"a = b"
+            ]
+          _ <- waitForTypecheck doc
+          kt0 <- knownTargetsFiles
+          liftIO $ assertBool ("B.hs expected in KnownTargets initially: " <> show kt0)
+            (any ("B.hs" `isSuffixOf`) kt0)
+          liftIO $ removeFile (sessionDir </> "B.hs")
+          sendNotification SMethod_WorkspaceDidChangeWatchedFiles $ DidChangeWatchedFilesParams
+            [ FileEvent (filePathToUri $ sessionDir </> "B.hs") FileChangeType_Deleted ]
+          expectDiagnostics [("A.hs", [(DiagnosticSeverity_Error, (1, 7), "Could not find module", Nothing)])]
+          kt1 <- knownTargetsFiles
+          liftIO $ assertBool ("B.hs should be removed from KnownTargets after delete: " <> show kt1)
+            (not $ any ("B.hs" `isSuffixOf`) kt1)
       , testWithDummyPlugin' "reload HLS after .cabal file changes" (mkIdeTestFs [copyDir ("watched-files" </> "reload")]) $ \sessionDir -> do
           let hsFile = "src" </> "MyLib.hs"
           _ <- openDoc hsFile "haskell"
@@ -86,6 +139,17 @@ tests = testGroup "watched files"
           expectDiagnostics [(hsFile, [])]
     ]
   ]
+
+knownTargetsFiles :: Session [FilePath]
+knownTargetsFiles = do
+  let method = SMethod_CustomMethod (Proxy @"test")
+  reqId <- sendRequest method (A.toJSON GetKnownTargetsList)
+  TResponseMessage{_result} <- skipManyTill anyMessage $ responseForId method reqId
+  case _result of
+    Left err -> liftIO (assertFailure $ "GetKnownTargetsList failed: " <> show err) >> pure []
+    Right val -> case A.fromJSON val of
+      A.Success xs -> pure xs
+      A.Error e    -> liftIO (assertFailure $ "GetKnownTargetsList parse failed: " <> e) >> pure []
 
 getWatchedFilesSubscriptionsUntil :: forall m. SServerMethod m -> Session [DidChangeWatchedFilesRegistrationOptions]
 getWatchedFilesSubscriptionsUntil m = do

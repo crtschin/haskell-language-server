@@ -24,7 +24,7 @@
 module Development.IDE.Core.Shake(
     IdeState, shakeSessionInit, shakeExtras, shakeDb, rootDir,
     ShakeExtras(..), getShakeExtras, getShakeExtrasRules,
-    KnownTargets(..), Target(..), toKnownFiles, unionKnownTargets, mkKnownTargets,
+    KnownTargets(..), Target(..), toKnownFiles, unionKnownTargets, mkKnownTargets, removeFromKnownTargets,
     IdeRule, IdeResult, RestartQueue,
     GetModificationTime(GetModificationTime, GetModificationTime_, missingFileDiagnostics),
     shakeOpen, shakeShut,
