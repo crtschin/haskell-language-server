@@ -29,7 +29,7 @@ isExplicit = isJust . hsmodExports . unLoc
 -- | Also matches names appearing only as constructor children of an 'IEThingWith' parent.
 isExported :: RdrName -> ParsedSource -> Bool
 isExported n ps = case hsmodExports (unLoc ps) of
-  Nothing      -> False
+  Nothing          -> False
   Just (L _ items) -> any (covers . unLoc) items
   where
     nFS = rdrNameFS n
@@ -71,12 +71,17 @@ removeExport ps name = replaceExportList ps (removeNamedIE name)
 removeConstructorExport :: RdrName -> RdrName -> ParsedSource -> Maybe [TextEdit]
 removeConstructorExport parent ctor ps = replaceExportList ps (removeCtorUnderParent parent ctor)
 
+-- | Keep an export if any name it brings into scope is referenced. External code may use only a @T(..)@ child, never @T@ itself.
 isReferencedExternally :: WithHieDb -> [FilePath] -> AvailInfo -> IO Bool
-isReferencedExternally withDb exclude avail = do
-  let n = availName avail
-  case nameModule_maybe n of
-    Nothing  -> pure False
-    Just modl -> do
-      rows <- withDb $ \db ->
-        findReferences db True (nameOccName n) (Just (moduleName modl)) (Just (moduleUnit modl)) exclude
-      pure (not (null rows))
+isReferencedExternally withDb exclude avail = anyReferenced (availNames avail)
+  where
+    anyReferenced []       = pure False
+    anyReferenced (n : ns) = do
+      found <- referenced n
+      if found then pure True else anyReferenced ns
+    referenced n = case nameModule_maybe n of
+      Nothing  -> pure False
+      Just modl -> do
+        rows <- withDb $ \db ->
+          findReferences db True (nameOccName n) (Just (moduleName modl)) (Just (moduleUnit modl)) exclude
+        pure (not (null rows))

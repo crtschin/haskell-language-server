@@ -253,6 +253,7 @@ library hls-cabal-plugin
     Ide.Plugin.Cabal.Completion.Data
     Ide.Plugin.Cabal.Completion.Types
     Ide.Plugin.Cabal.Definition
+    Ide.Plugin.Cabal.ExposedModules
     Ide.Plugin.Cabal.FieldSuggest
     Ide.Plugin.Cabal.Files
     Ide.Plugin.Cabal.OfInterest
@@ -1776,7 +1777,7 @@ common export
     cpp-options: -Dhls_export
 
 library hls-export-plugin
-  import: defaults, pedantic, warnings
+  import: defaults, pedantic, warnings, cabal
   if !flag(export)
     buildable: False
   exposed-modules:

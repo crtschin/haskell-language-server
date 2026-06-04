@@ -11,6 +11,8 @@ import qualified Language.LSP.Protocol.Lens as L
 import           System.FilePath            (equalFilePath, joinPath,
                                              splitDirectories, (</>))
 import           Test.Hls
+import           Test.Hls.FileSystem        (directCradle, file,
+                                             mkVirtualFileTree, text)
 
 plugin :: PluginTestDescriptor Log
 plugin = mkPluginTestDescriptor descriptor "export"
@@ -29,6 +31,35 @@ runExportResolve :: (FilePath -> Session a) -> IO a
 runExportResolve act =
     runSessionWithTestConfig def
         { testDirLocation = Left testDataDir
+        , testPluginDescriptor = plugin
+        , testConfigCaps = codeActionResolveCaps
+        } act
+
+testDataDirExposed :: FilePath
+testDataDirExposed = "plugins" </> "hls-export-plugin" </> "test" </> "testdata-exposed"
+
+runExportResolveExposed :: (FilePath -> Session a) -> IO a
+runExportResolveExposed act =
+    runSessionWithTestConfig def
+        { testDirLocation = Left testDataDirExposed
+        , testPluginDescriptor = plugin
+        , testConfigCaps = codeActionResolveCaps
+        } act
+
+-- | A project materialised in a temp dir with no enclosing @.cabal@ file, so the
+-- package's exposed modules cannot be determined.
+runExportNoCabal :: (FilePath -> Session a) -> IO a
+runExportNoCabal act =
+    runSessionWithTestConfig def
+        { testDirLocation = Right $ mkVirtualFileTree testDataDir
+            [ directCradle ["NoCabal"]
+            , file "NoCabal.hs" $ text $ T.unlines
+                [ "module NoCabal where"
+                , ""
+                , "noCabalValue :: Int"
+                , "noCabalValue = 1"
+                ]
+            ]
         , testPluginDescriptor = plugin
         , testConfigCaps = codeActionResolveCaps
         } act
@@ -317,6 +348,30 @@ main = defaultTestRunner $ testGroup "Export"
             titles <- codeActionTitles doc (rangeAt 3 0)  -- on `usedByOther`
             liftIO $ "Export explicitly" `notElem` titles
                 @? ("Did not expect Export explicitly action, saw: " <> show titles)
+
+        , testCase "not offered on a module exposed by the library" $ runExportResolveExposed $ \_dir -> do
+            -- ExposedApi is exposed by the library, so its exports are public API and the action must not appear.
+            target <- openDoc "ExposedApi.hs" "haskell"
+            waitForKickDone
+            titles <- codeActionTitles target (rangeAt 0 7)
+            liftIO $ "Export explicitly" `notElem` titles
+                @? ("Export explicitly must not be offered on an exposed module, saw: " <> show titles)
+
+        , testCase "still offered on a non-exposed module" $ runExportResolveExposed $ \_dir -> do
+            -- InternalApi is not exposed by the library, so the trim action still applies.
+            target <- openDoc "InternalApi.hs" "haskell"
+            waitForKickDone
+            titles <- codeActionTitles target (rangeAt 0 7)
+            liftIO $ "Export explicitly" `elem` titles
+                @? ("Export explicitly should be offered on a non-exposed module, saw: " <> show titles)
+
+        , testCase "not offered when no cabal file can be found" $ runExportNoCabal $ \_dir -> do
+            -- Without a cabal file the public API is unknown, so the action is withheld.
+            target <- openDoc "NoCabal.hs" "haskell"
+            waitForKickDone
+            titles <- codeActionTitles target (rangeAt 0 7)
+            liftIO $ "Export explicitly" `notElem` titles
+                @? ("Export explicitly must be withheld without cabal info, saw: " <> show titles)
         ]
     ]
 
