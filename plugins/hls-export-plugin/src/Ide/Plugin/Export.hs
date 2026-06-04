@@ -107,7 +107,7 @@ explicitExportCodeActionResolveProvider state _pId ca uri () = do
   let items = mapMaybe availToLIE used
   case setExportList ps items of
     Just edits ->
-      pure $ ca & L.edit ?~ WorkspaceEdit (Just (Map.singleton uri edits)) Nothing Nothing
+      pure $ ca & L.edit ?~ singleFileEdit uri edits
     Nothing ->
       throwError $ PluginInternalError "Export.Resolve: cannot locate module name span"
 
@@ -119,14 +119,13 @@ quickCodeActionHandlers state _plId (CodeActionParams _ _ doc range _) = do
   let ps = pm_parsed_source pm
   pure . InL . map InR $ case (isExplicit ps, locateUnderCursor (range ^. L.start) ps) of
     (True, Just under) ->
-      let mkWS edits = WorkspaceEdit (Just (Map.singleton uri edits)) Nothing Nothing
-       in [ ca
-          | Just (verb, title, edits) <-
-              [ addAction under ps
-              , removeAction under ps
-              ]
-          , let ca = mkAction (verb <> " `" <> title <> "`") & L.edit ?~ mkWS edits
+      [ ca
+      | Just (verb, title, edits) <-
+          [ addAction under ps
+          , removeAction under ps
           ]
+      , let ca = mkAction (verb <> " `" <> title <> "`") & L.edit ?~ singleFileEdit uri edits
+      ]
     _ -> []
 
 addAction :: UnderCursor -> ParsedSource -> Maybe (Text, Text, [TextEdit])
@@ -156,6 +155,9 @@ removeAction under ps = case under of
     removeNamed n
       | n `isExported` ps = ("Unexport", printRdrName n,) <$> removeExport ps n
       | otherwise = Nothing
+
+singleFileEdit :: Uri -> [TextEdit] -> WorkspaceEdit
+singleFileEdit uri edits = WorkspaceEdit (Just (Map.singleton uri edits)) Nothing Nothing
 
 mkAction :: Text -> CodeAction
 mkAction title = CodeAction {..}

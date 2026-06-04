@@ -11,6 +11,7 @@ module Ide.Plugin.Export.ExactPrint
   , mkExportList
   , appendIE
   , removeNamedIE
+  , reconcileExportList
   , addCtorUnderParent
   , removeCtorUnderParent
   , printExportList
@@ -20,9 +21,10 @@ module Ide.Plugin.Export.ExactPrint
 
 import           Control.Lens                    (_last, over)
 import           Data.Bifunctor                  (first)
-import           Data.List                       (mapAccumL)
+import           Data.List                       (foldl', mapAccumL)
 import           Data.List.NonEmpty              (NonEmpty (..))
 import qualified Data.List.NonEmpty              as NE
+import           Data.Maybe                      (fromMaybe, listToMaybe)
 import           Data.Text                       (Text)
 import qualified Data.Text                       as T
 import           Development.IDE.GHC.Compat
@@ -80,7 +82,7 @@ availToLIE :: AvailInfo -> Maybe (LIE GhcPs)
 availToLIE = \case
   AvailName n -> Just (mkValueIE (nameRdr n))
   AvailTC parent names _
-    | null (filter (/= parent) names) -> Just (mkTypeAbsIE (nameRdr parent))
+    | all (== parent) names -> Just (mkTypeAbsIE (nameRdr parent))
     | otherwise -> Just (mkTypeAllIE (nameRdr parent))
   AvailFL _ -> Nothing
   where
@@ -210,13 +212,21 @@ mkExportList items =
       }
 #endif
 
-    commaList []     = []
-    commaList [x]    = [setEntryDP (first removeTrailingCommaAnn x) (SameLine 0)]
-    commaList (x:xs) = setEntryDP (first ensureTrailingComma x) (SameLine 0) : go xs
+    commaList = go True
       where
-        go [y]    = [setEntryDP (first removeTrailingCommaAnn y) (SameLine 1)]
-        go (y:ys) = setEntryDP (first ensureTrailingComma y) (SameLine 1) : go ys
-        go []     = []
+        go _       []     = []
+        go isFirst [x]    = [setEntryDP (first removeTrailingCommaAnn x) (dp isFirst)]
+        go isFirst (x:xs) = setEntryDP (first ensureTrailingComma x) (dp isFirst) : go False xs
+        dp isFirst = SameLine (if isFirst then 0 else 1)
+
+-- | Map over an @IEThingWith@'s listed constructors, a no-op for any other item.
+overThingWithChildren :: ([LIEWrappedName GhcPs] -> [LIEWrappedName GhcPs]) -> IE GhcPs -> IE GhcPs
+#if MIN_VERSION_ghc(9,9,0)
+overThingWithChildren f (IEThingWith x n w cs docs) = IEThingWith x n w (f cs) docs
+#else
+overThingWithChildren f (IEThingWith x n w cs)      = IEThingWith x n w (f cs)
+#endif
+overThingWithChildren _ ie                          = ie
 
 -- | Internal: wrap an 'RdrName' as an 'IEName' located node.
 mkIEName :: RdrName -> LIEWrappedName GhcPs
@@ -232,7 +242,20 @@ appendIE item (L l items) = L l (fixLast items ++ [newItem (not (null items))])
   where
     newItem hasSibling =
       setEntryDP (first removeTrailingCommaAnn item) (SameLine (if hasSibling then 1 else 0))
-    fixLast = over _last (first ensureTrailingComma)
+    -- Reuse the comma that already separates the list's items. On a multiline
+    -- leading comma list that comma carries a 'DifferentLine' delta, so the new
+    -- separator lands on its own line instead of collapsing onto the last item.
+    fixLast = over _last (first addSep)
+    addSep = maybe ensureTrailingComma withTrailingComma (separatorComma items)
+
+-- | The trailing comma that separates existing items, if the list has any.
+separatorComma :: [LIE GhcPs] -> Maybe TrailingAnn
+#if MIN_VERSION_ghc(9,9,0)
+separatorComma items =
+  listToMaybe [c | L ann _ <- items, c <- trailingAnns ann, isCommaAnn c]
+#else
+separatorComma _ = Nothing
+#endif
 
 removeNamedIE :: RdrName -> LExportList -> Maybe LExportList
 removeNamedIE name (L l items) = case break matches items of
@@ -247,6 +270,28 @@ removeNamedIE name (L l items) = case break matches items of
     matches (L _ ie) = maybe False ((== fs) . rdrNameFS) (ieParentName ie)
     resetFirstEntryDP []     = []
     resetFirstEntryDP (x:xs) = setEntryDP x (SameLine 0) : xs
+
+-- | Rewrite an existing export list to contain exactly @desired@ (matched by parent
+-- name), keeping surviving items' layout. A matched item takes the desired entry's
+-- shape, so a stale @T(C1)@ becomes the wanted @T(..)@ or @T@.
+reconcileExportList :: [LIE GhcPs] -> LExportList -> LExportList
+reconcileExportList desired lst@(L _ items0) =
+    foldl' (flip appendIE) (overItems (map swap) trimmed) additions
+  where
+    desiredByFS = [(rdrNameFS p, ie) | L _ ie <- desired, Just p <- [ieParentName ie]]
+    desiredFSs  = map fst desiredByFS
+    existingFSs = [rdrNameFS p | L _ ie <- items0, Just p <- [ieParentName ie]]
+
+    staleNames = [p | L _ ie <- items0, Just p <- [ieParentName ie], rdrNameFS p `notElem` desiredFSs]
+    additions  = [item | item@(L _ ie) <- desired, Just p <- [ieParentName ie], rdrNameFS p `notElem` existingFSs]
+
+    trimmed = foldl' (\acc n -> fromMaybe acc (removeNamedIE n acc)) lst staleNames
+
+    swap (L ann ie) = case ieParentName ie of
+      Just p | Just newIe <- lookup (rdrNameFS p) desiredByFS -> L ann newIe
+      _                                                       -> L ann ie
+
+    overItems f (L l items) = L l (f items)
 
 -- | 'Nothing' iff @ctor@ is already exported (via @T(..)@ or @T(...,ctor,...)@).
 addCtorUnderParent ::
@@ -275,14 +320,10 @@ addCtorUnderParent parent ctor lst@(L l items) =
     findParent (L _ ie : rest)
       | maybe False ((== parentFS) . rdrNameFS) (ieParentName ie) =
           case ie of
-            IEThingAll{}           -> FoundIEThingAll
-#if MIN_VERSION_ghc(9,9,0)
-            IEThingWith _ _ _ cs _ -> FoundIEThingWith (ctorPresence cs)
-#else
-            IEThingWith _ _ _ cs   -> FoundIEThingWith (ctorPresence cs)
-#endif
-            IEThingAbs{}           -> FoundIEThingAbs
-            _                      -> findParent rest
+            IEThingAll{} -> FoundIEThingAll
+            IEThingAbs{} -> FoundIEThingAbs
+            _ | Just cs <- ieThingWithChildren ie -> FoundIEThingWith (ctorPresence cs)
+              | otherwise                         -> findParent rest
       | otherwise = findParent rest
 
     transformParent f (L itemLoc ie)
@@ -290,19 +331,10 @@ addCtorUnderParent parent ctor lst@(L l items) =
       | otherwise = L itemLoc ie
 
     extendThingWith :: IE GhcPs -> IE GhcPs
-    extendThingWith (IEThingWith ann lname wild cs
-#if MIN_VERSION_ghc(9,9,0)
-                                  docs
-#endif
-                    ) =
+    extendThingWith = overThingWithChildren $ \cs ->
       let hasSibling = not (null cs)
           newChild = setEntryDP (mkIEName ctor) (SameLine (if hasSibling then 1 else 0))
-          cs' = (if hasSibling then map (first ensureTrailingComma) cs else cs) ++ [newChild]
-      in IEThingWith ann lname wild cs'
-#if MIN_VERSION_ghc(9,9,0)
-                     docs
-#endif
-    extendThingWith other = other
+      in (if hasSibling then map (first ensureTrailingComma) cs else cs) ++ [newChild]
 
 -- | Removing the last child downgrades the parent from @T(ctor)@ to @T@.
 removeCtorUnderParent ::
@@ -318,57 +350,27 @@ removeCtorUnderParent parent ctor (L l items) =
     ctorFS = rdrNameFS ctor
 
     step acc lie@(L itemLoc ie)
-      | maybe False ((== parentFS) . rdrNameFS) (ieParentName ie) =
-          case ie of
-#if MIN_VERSION_ghc(9,9,0)
-            IEThingWith _ _ _ cs _
-#else
-            IEThingWith _ _ _ cs
-#endif
-              | any ((== ctorFS) . rdrNameFS . ieWrappedRdrName . unLoc) cs ->
-                  let cs' = filter ((/= ctorFS) . rdrNameFS . ieWrappedRdrName . unLoc) cs
-                      ie' = case cs' of
-                              [] -> downgradeToAbs ie
-                              _  -> rebuildThingWith ie cs'
-                  in (True, L itemLoc ie')
-            _ -> (acc, lie)
+      | maybe False ((== parentFS) . rdrNameFS) (ieParentName ie)
+      , Just cs <- ieThingWithChildren ie
+      , any ((== ctorFS) . rdrNameFS . ieWrappedRdrName . unLoc) cs =
+          let cs' = filter ((/= ctorFS) . rdrNameFS . ieWrappedRdrName . unLoc) cs
+              ie' = case cs' of
+                      [] -> downgradeToAbs ie
+                      _  -> overThingWithChildren (const (normaliseChildren cs')) ie
+          in (True, L itemLoc ie')
       | otherwise = (acc, lie)
 
     downgradeToAbs :: IE GhcPs -> IE GhcPs
-    downgradeToAbs (IEThingWith _ lname _ _
-#if MIN_VERSION_ghc(9,9,0)
-                                docs
-#endif
-                   ) =
-      IEThingAbs
-#if MIN_VERSION_ghc(9,11,0)
-        Nothing
-#elif MIN_VERSION_ghc(9,8,0)
-        (Nothing, noAnn)
-#else
-        noAnn
-#endif
-        lname
-#if MIN_VERSION_ghc(9,9,0)
-        docs
-#endif
-    downgradeToAbs other = other
+    downgradeToAbs ie
+      | Just _ <- ieThingWithChildren ie = unLoc (mkTypeAbsIE parent)
+      | otherwise                        = ie
 
-    rebuildThingWith :: IE GhcPs -> [LIEWrappedName GhcPs] -> IE GhcPs
-    rebuildThingWith (IEThingWith ann lname wild _
-#if MIN_VERSION_ghc(9,9,0)
-                                   docs
-#endif
-                     ) newCs =
+    normaliseChildren :: [LIEWrappedName GhcPs] -> [LIEWrappedName GhcPs]
+    normaliseChildren newCs =
       let normalised = case newCs of
             []     -> []
             (c:cs) -> setEntryDP c (SameLine 0) : map (first ensureTrailingComma) cs
-          stripped = over _last (first removeTrailingCommaAnn) normalised
-      in IEThingWith ann lname wild stripped
-#if MIN_VERSION_ghc(9,9,0)
-                     docs
-#endif
-    rebuildThingWith other _ = other
+      in over _last (first removeTrailingCommaAnn) normalised
 
 printExportList :: LExportList -> Text
 printExportList l = T.pack (exactPrint (setEntryDP l (SameLine 0)))
@@ -390,15 +392,22 @@ trailingAnns sa = case ann sa of
   _                          -> []
 #endif
 
-removeTrailingCommaAnn :: SrcSpanAnnA -> SrcSpanAnnA
+-- | Map over an item's trailing annotations, hiding the version-specific 'AnnListItem' shape.
+overTrailingAnns :: ([TrailingAnn] -> [TrailingAnn]) -> SrcSpanAnnA -> SrcSpanAnnA
 #if MIN_VERSION_ghc(9,9,0)
-removeTrailingCommaAnn (EpAnn anc (AnnListItem as) cs) =
-  EpAnn anc (AnnListItem (filter (not . isCommaAnn) as)) cs
+overTrailingAnns f (EpAnn anc (AnnListItem as) cs) = EpAnn anc (AnnListItem (f as)) cs
 #else
-removeTrailingCommaAnn it@(SrcSpanAnn EpAnnNotUsed _) = it
-removeTrailingCommaAnn (SrcSpanAnn (EpAnn anc (AnnListItem as) cs) l) =
-  SrcSpanAnn (EpAnn anc (AnnListItem (filter (not . isCommaAnn) as)) cs) l
+overTrailingAnns _ it@(SrcSpanAnn EpAnnNotUsed _) = it
+overTrailingAnns f (SrcSpanAnn (EpAnn anc (AnnListItem as) cs) l) =
+  SrcSpanAnn (EpAnn anc (AnnListItem (f as)) cs) l
 #endif
+
+removeTrailingCommaAnn :: SrcSpanAnnA -> SrcSpanAnnA
+removeTrailingCommaAnn = overTrailingAnns (filter (not . isCommaAnn))
+
+-- | Replace an item's trailing comma with @c@, preserving its delta.
+withTrailingComma :: TrailingAnn -> SrcSpanAnnA -> SrcSpanAnnA
+withTrailingComma c = overTrailingAnns (\as -> filter (not . isCommaAnn) as ++ [c])
 
 isCommaAnn :: TrailingAnn -> Bool
 isCommaAnn AddCommaAnn{} = True
@@ -430,12 +439,5 @@ data CtorPresence = CtorAbsent | CtorPresent
   deriving Eq
 
 isInIE :: FastString -> IE GhcPs -> Bool
-isInIE n ie = case ie of
-#if MIN_VERSION_ghc(9,9,0)
-  IEThingWith _ _ _ cs _ ->
-    any ((== n) . rdrNameFS . ieWrappedRdrName . unLoc) cs
-#else
-  IEThingWith _ _ _ cs   ->
-    any ((== n) . rdrNameFS . ieWrappedRdrName . unLoc) cs
-#endif
-  _ -> False
+isInIE n =
+  maybe False (any ((== n) . rdrNameFS . ieWrappedRdrName . unLoc)) . ieThingWithChildren

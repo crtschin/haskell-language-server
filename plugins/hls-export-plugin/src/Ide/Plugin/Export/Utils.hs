@@ -1,9 +1,29 @@
-{-# LANGUAGE CPP        #-}
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE CPP             #-}
+{-# LANGUAGE RecordWildCards #-}
 module Ide.Plugin.Export.Utils where
 
+import qualified Development.IDE.Core.Shake      as Shake
 import           Development.IDE.GHC.Compat
 import           Development.IDE.GHC.Compat.Util
+#ifdef hls_cabal
+import qualified Ide.Plugin.Cabal.ExposedModules as Cabal
+#endif
+import           Data.Aeson
+import qualified Data.Map.Strict                 as Map
+import           Data.Text                       (Text)
+import           Development.IDE
+import           GHC.Generics
+import           Language.LSP.Protocol.Types
+
+#ifndef hls_cabal
+-- | Fallback when cabal support is not compiled in. Every module is treated as
+-- exposed.
+isModuleExposed :: NormalizedFilePath -> Text -> Action Bool
+isModuleExposed _ _ = pure True
+#else
+isModuleExposed :: NormalizedFilePath -> Text -> Action Bool
+isModuleExposed = Cabal.isModuleExposed
+#endif
 
 rdrNameFS :: RdrName -> FastString
 rdrNameFS = occNameFS . rdrNameOcc
@@ -23,6 +43,15 @@ ieParentName e = case e of
 #endif
   _                            -> Nothing
 
+-- | The listed constructors of an @IEThingWith@ (@T(C1, C2)@), or 'Nothing' otherwise.
+ieThingWithChildren :: IE GhcPs -> Maybe [LIEWrappedName GhcPs]
+#if MIN_VERSION_ghc(9,9,0)
+ieThingWithChildren (IEThingWith _ _ _ cs _) = Just cs
+#else
+ieThingWithChildren (IEThingWith _ _ _ cs)   = Just cs
+#endif
+ieThingWithChildren _                        = Nothing
+
 ieWrappedRdrName :: IEWrappedName GhcPs -> RdrName
 ieWrappedRdrName = \case
   IEName _ (L _ rdr)    -> rdr
@@ -31,3 +60,49 @@ ieWrappedRdrName = \case
 #if MIN_VERSION_ghc(9,11,0)
   IEDefault _ (L _ rdr) -> rdr
 #endif
+
+-- | True when the export item's head name is the given 'FastString'.
+parentNameIs :: FastString -> IE GhcPs -> Bool
+parentNameIs fs = maybe False ((== fs) . rdrNameFS) . ieParentName
+
+-- | The 'FastString' of a located wrapped name, e.g. an @IEThingWith@ child.
+lieWrappedNameFS :: LIEWrappedName GhcPs -> FastString
+lieWrappedNameFS = rdrNameFS . ieWrappedRdrName . unLoc
+
+-- | True when @n@ is listed as a child constructor of an @IEThingWith@.
+isInIE :: FastString -> IE GhcPs -> Bool
+isInIE n = maybe False (any ((== n) . lieWrappedNameFS)) . ieThingWithChildren
+
+singleFileEdit :: Uri -> [TextEdit] -> WorkspaceEdit
+singleFileEdit uri edits = WorkspaceEdit (Just (Map.singleton uri edits)) Nothing Nothing
+
+mkAction :: Text -> CodeAction
+mkAction title = CodeAction {..}
+  where
+    _title = title
+    _kind = Just CodeActionKind_RefactorRewrite
+    _diagnostics = Nothing
+    _isPreferred = Nothing
+    _disabled = Nothing
+    _edit = Nothing
+    _command = Nothing
+    _data_ = Nothing
+
+data Log
+  = LogShake Shake.Log
+  | forall a. (Pretty a) => LogResolve a
+
+instance Pretty Log where
+  pretty (LogShake l)   = pretty l
+  pretty (LogResolve l) = pretty l
+
+-- | Which export list a resolve request should build.
+data ExportMode
+  = ExportUsed
+  -- ^ Only the names referenced by external modules.
+  | ExportEverything
+  -- ^ Every symbol the module exports.
+  deriving Generic
+
+instance ToJSON ExportMode
+instance FromJSON ExportMode

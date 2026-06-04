@@ -2,6 +2,7 @@ cradle:
   direct:
     arguments:
       - AddExport
+      - AddExportMultiline
       - AddCtor
       - AddClass
       - Implicit
@@ -12,3 +13,5 @@ cradle:
       - UsesMakeExplicitUsed
       - RefineExports
       - UsesRefineExports
+      - MultilineRefine
+      - UsesMultilineRefine

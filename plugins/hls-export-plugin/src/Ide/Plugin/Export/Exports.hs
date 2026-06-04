@@ -1,25 +1,21 @@
 module Ide.Plugin.Export.Exports
   ( isExplicit
   , isExported
-  , isReferencedExternally
-  , addExport
   , setExportList
+  , setExportListExpanding
+  , addExport
   , addConstructorExport
   , removeExport
   , removeConstructorExport
-  )
-where
+  , isReferencedExternally
+  ) where
 
 import           Data.Maybe                   (isJust)
 import           Development.IDE.GHC.Compat
 import           Development.IDE.GHC.Error    (srcSpanToRange)
 import           Development.IDE.Types.Shake
 import           HieDb
-import           Ide.Plugin.Export.ExactPrint (LExportList, addCtorUnderParent,
-                                               appendIE, isInIE, mkExportList,
-                                               printExportList,
-                                               removeCtorUnderParent,
-                                               removeNamedIE, toDeltaExportList)
+import           Ide.Plugin.Export.ExactPrint
 import           Ide.Plugin.Export.Utils
 import           Language.LSP.Protocol.Types
 
@@ -33,9 +29,7 @@ isExported n ps = case hsmodExports (unLoc ps) of
   Just (L _ items) -> any (covers . unLoc) items
   where
     nFS = rdrNameFS n
-    covers ie =
-      maybe False ((== nFS) . rdrNameFS) (ieParentName ie)
-        || isInIE nFS ie
+    covers ie = parentNameIs nFS ie || isInIE nFS ie
 
 addExportList :: ParsedSource -> [LIE GhcPs] -> Maybe [TextEdit]
 addExportList ps items = do
@@ -45,12 +39,21 @@ addExportList ps items = do
   Just [TextEdit (Range end end) (" " <> listText)]
 
 setExportList :: ParsedSource -> [LIE GhcPs] -> Maybe [TextEdit]
-setExportList ps items = case hsmodExports (unLoc ps) of
-  Nothing -> addExportList ps items
-  Just (L lloc _) -> do
-    r <- srcSpanToRange (locA lloc)
-    let listText = printExportList (mkExportList items)
-    Just [TextEdit r listText]
+setExportList = setExportListWith reconcileExportList
+
+-- | Like 'setExportList' but additive: an existing list keeps every entry and
+-- only gains the missing items, so a partial list is expanded in place.
+setExportListExpanding :: ParsedSource -> [LIE GhcPs] -> Maybe [TextEdit]
+setExportListExpanding = setExportListWith expandExportList
+
+-- | Replace the export list with @merge items@ applied to the current one,
+-- adding a fresh list after the module name when there is none yet.
+setExportListWith :: ([LIE GhcPs] -> LExportList -> LExportList) -> ParsedSource -> [LIE GhcPs] -> Maybe [TextEdit]
+setExportListWith merge ps items = case hsmodExports (unLoc ps) of
+  Nothing      -> addExportList ps items
+  Just exports -> do
+    r <- srcSpanToRange (getLoc exports)
+    Just [TextEdit r (printExportList (merge items (toDeltaExportList exports)))]
 
 replaceExportList :: ParsedSource -> (LExportList -> Maybe LExportList) -> Maybe [TextEdit]
 replaceExportList ps f = do
@@ -75,13 +78,13 @@ removeConstructorExport parent ctor ps = replaceExportList ps (removeCtorUnderPa
 isReferencedExternally :: WithHieDb -> [FilePath] -> AvailInfo -> IO Bool
 isReferencedExternally withDb exclude avail = anyReferenced (availNames avail)
   where
-    anyReferenced []       = pure False
-    anyReferenced (n : ns) = do
+    anyReferenced = foldr orReferenced (pure False)
+    orReferenced n rest = do
       found <- referenced n
-      if found then pure True else anyReferenced ns
+      if found then pure True else rest
     referenced n = case nameModule_maybe n of
       Nothing  -> pure False
-      Just modl -> do
+      Just mod -> do
         rows <- withDb $ \db ->
-          findReferences db True (nameOccName n) (Just (moduleName modl)) (Just (moduleUnit modl)) exclude
+          findReferences db True (nameOccName n) (Just (moduleName mod)) (Just (moduleUnit mod)) exclude
         pure (not (null rows))

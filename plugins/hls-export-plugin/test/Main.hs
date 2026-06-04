@@ -118,6 +118,12 @@ main = defaultTestRunner $ testGroup "Export"
             doc <- openDoc "AddExport.hs" "haskell"
             waitForKickDone
             noExportOffered doc (rangeAt 3 0)  -- on `foo`
+
+        , testCase "append follows a multi-line leading-comma list" $ runExport $ \_dir -> do
+            doc <- openDoc "AddExportMultiline.hs" "haskell"
+            waitForKickDone
+            executeExportAction doc (rangeAt 11 0)  -- on `baz`
+            containsAfter doc ["  , baz\n  ) where"]
         ]
 
     , testGroup "Add: type declarations"
@@ -341,6 +347,17 @@ main = defaultTestRunner $ testGroup "Export"
                 @? ("unused should not be exported:\n" <> T.unpack header)
             liftIO $ not ("UnusedT" `T.isInfixOf` header)
                 @? ("UnusedT should not be exported:\n" <> T.unpack header)
+
+        , testCase "explicit module: preserves multi-line layout when trimming" $ runExportResolve $ \_dir -> do
+            _consumer <- openDoc "UsesMultilineRefine.hs" "haskell"
+            target    <- openDoc "MultilineRefine.hs" "haskell"
+            waitForIndex "UsesMultilineRefine.hs"
+            runExplicitAction target (rangeAt 0 7)
+            contents <- documentContents target
+            liftIO $ "  ( used\n  , T (..)\n  ) where" `T.isInfixOf` contents
+                @? ("Expected the trimmed list to keep its leading-comma layout:\n" <> T.unpack contents)
+            liftIO $ not ("unused" `T.isInfixOf` fst (T.breakOn "where" contents))
+                @? ("unused should have been trimmed from the export list:\n" <> T.unpack contents)
 
         , testCase "no action when cursor is off the module header" $ runExportResolve $ \_dir -> do
             doc <- openDoc "MakeExplicitUsed.hs" "haskell"
