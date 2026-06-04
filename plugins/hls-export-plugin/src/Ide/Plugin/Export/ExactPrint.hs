@@ -19,54 +19,76 @@ module Ide.Plugin.Export.ExactPrint
   , isInIE
   ) where
 
-import           Control.Lens                    (_last, over)
-import           Data.Bifunctor                  (first)
-import           Data.List                       (foldl', mapAccumL)
-import           Data.List.NonEmpty              (NonEmpty (..))
-import qualified Data.List.NonEmpty              as NE
-import           Data.Maybe                      (fromMaybe, listToMaybe)
-import           Data.Text                       (Text)
-import qualified Data.Text                       as T
+import           Control.Lens                              (_last, over)
+import           Data.Bifunctor                            (first)
+import           Data.List                                 (foldl', mapAccumL)
+import           Data.List.NonEmpty                        (NonEmpty (..))
+import qualified Data.List.NonEmpty                        as NE
+import           Data.Maybe                                (fromMaybe,
+                                                            listToMaybe)
+import           Data.Text                                 (Text)
+import qualified Data.Text                                 as T
 import           Development.IDE.GHC.Compat
-import           Development.IDE.GHC.Orphans     ()
+import           Development.IDE.GHC.Orphans               ()
 #if MIN_VERSION_ghc(9,11,0)
-import           GHC                             (AnnList (..), DeltaPos (..),
-                                                  EpAnn (..), EpaLocation (..),
-                                                  EpaLocation' (..), LocatedL,
-                                                  NoAnn (..), SrcSpanAnnA,
-                                                  TrailingAnn (..),
-                                                  emptyComments, noAnn)
+import           GHC                                       (AnnList (..),
+                                                            DeltaPos (..),
+                                                            EpAnn (..),
+                                                            EpaLocation (..),
+                                                            EpaLocation' (..),
+                                                            LocatedL,
+                                                            NoAnn (..),
+                                                            TrailingAnn (..),
+                                                            emptyComments,
+                                                            noAnn)
 #elif MIN_VERSION_ghc(9,9,0)
-import           GHC                             (AnnList (..), DeltaPos (..),
-                                                  EpAnn (..), EpaLocation,
-                                                  EpaLocation' (..), LocatedL,
-                                                  NoAnn (..), SrcSpanAnnA,
-                                                  TrailingAnn (..),
-                                                  emptyComments, noAnn)
+import           GHC                                       (AnnList (..),
+                                                            DeltaPos (..),
+                                                            EpAnn (..),
+                                                            EpaLocation,
+                                                            EpaLocation' (..),
+                                                            LocatedL,
+                                                            NoAnn (..),
+                                                            TrailingAnn (..),
+                                                            emptyComments,
+                                                            noAnn)
 #else
-import           GHC                             (AnnList (..), DeltaPos (..),
-                                                  EpAnn (..), EpaLocation (..),
-                                                  LocatedL, SrcSpanAnn' (..),
-                                                  SrcSpanAnnA, TrailingAnn (..),
-                                                  addAnns, emptyComments, noAnn)
+import           GHC                                       (AnnList (..),
+                                                            DeltaPos (..),
+                                                            EpAnn (..),
+                                                            EpaLocation (..),
+                                                            LocatedL,
+                                                            SrcSpanAnn' (..),
+                                                            TrailingAnn (..),
+                                                            addAnns,
+                                                            emptyComments,
+                                                            noAnn)
 #endif
 
 #if !MIN_VERSION_ghc(9,9,0)
-import           GHC.Parser.Annotation           (Anchor (..),
-                                                  AnchorOperation (..),
-                                                  placeholderRealSpan)
+import           GHC.Parser.Annotation                     (Anchor (..),
+                                                            AnchorOperation (..),
+                                                            placeholderRealSpan)
 #endif
-import           Language.Haskell.GHC.ExactPrint (addComma, exactPrint,
-                                                  makeDeltaAst, setEntryDP)
+import           Language.Haskell.GHC.ExactPrint           (addComma,
+                                                            exactPrint,
+                                                            makeDeltaAst,
+                                                            setEntryDP)
 
 #if MIN_VERSION_ghc(9,11,0)
-import           GHC                             (AnnListBrackets (..),
-                                                  EpToken (..), LocatedLI)
-import           GHC.Types.SrcLoc                (UnhelpfulSpanReason (..))
+import           GHC                                       (AnnListBrackets (..),
+                                                            EpToken (..),
+                                                            LocatedLI)
+import           GHC.Types.SrcLoc                          (UnhelpfulSpanReason (..))
 #else
-import           GHC                             (AddEpAnn (..))
+import           GHC                                       (AddEpAnn (..))
 #endif
 import           Development.IDE.GHC.Compat.Util
+import           Development.IDE.GHC.ExactPrint.Annotation (ensureTrailingComma,
+                                                            epl, isCommaAnn,
+                                                            removeTrailingCommaAnn,
+                                                            trailingAnns,
+                                                            withTrailingComma)
 import           Ide.Plugin.Export.Utils
 
 -- | Located @[LIE GhcPs]@ — the shape of an export list. Aliases either
@@ -378,41 +400,6 @@ printExportList l = T.pack (exactPrint (setEntryDP l (SameLine 0)))
 toDeltaExportList :: LExportList -> LExportList
 toDeltaExportList = makeDeltaAst
 
-ensureTrailingComma :: SrcSpanAnnA -> SrcSpanAnnA
-ensureTrailingComma ann
-  | any isCommaAnn (trailingAnns ann) = ann
-  | otherwise = addComma ann
-
-trailingAnns :: SrcSpanAnnA -> [TrailingAnn]
-#if MIN_VERSION_ghc(9,9,0)
-trailingAnns (EpAnn _ (AnnListItem as) _) = as
-#else
-trailingAnns sa = case ann sa of
-  EpAnn _ (AnnListItem as) _ -> as
-  _                          -> []
-#endif
-
--- | Map over an item's trailing annotations, hiding the version-specific 'AnnListItem' shape.
-overTrailingAnns :: ([TrailingAnn] -> [TrailingAnn]) -> SrcSpanAnnA -> SrcSpanAnnA
-#if MIN_VERSION_ghc(9,9,0)
-overTrailingAnns f (EpAnn anc (AnnListItem as) cs) = EpAnn anc (AnnListItem (f as)) cs
-#else
-overTrailingAnns _ it@(SrcSpanAnn EpAnnNotUsed _) = it
-overTrailingAnns f (SrcSpanAnn (EpAnn anc (AnnListItem as) cs) l) =
-  SrcSpanAnn (EpAnn anc (AnnListItem (f as)) cs) l
-#endif
-
-removeTrailingCommaAnn :: SrcSpanAnnA -> SrcSpanAnnA
-removeTrailingCommaAnn = overTrailingAnns (filter (not . isCommaAnn))
-
--- | Replace an item's trailing comma with @c@, preserving its delta.
-withTrailingComma :: TrailingAnn -> SrcSpanAnnA -> SrcSpanAnnA
-withTrailingComma c = overTrailingAnns (\as -> filter (not . isCommaAnn) as ++ [c])
-
-isCommaAnn :: TrailingAnn -> Bool
-isCommaAnn AddCommaAnn{} = True
-isCommaAnn _             = False
-
 #if MIN_VERSION_ghc(9,9,0)
 entryAnchor :: DeltaPos -> EpaLocation
 #if MIN_VERSION_ghc(9,11,0)
@@ -420,13 +407,6 @@ entryAnchor dp = EpaDelta (UnhelpfulSpan UnhelpfulNoLocationInfo) dp []
 #else
 entryAnchor dp = EpaDelta dp []
 #endif
-#endif
-
-epl :: Int -> EpaLocation
-#if MIN_VERSION_ghc(9,11,0)
-epl n = EpaDelta (UnhelpfulSpan UnhelpfulNoLocationInfo) (SameLine n) []
-#else
-epl n = EpaDelta (SameLine n) []
 #endif
 
 data FindParentResult

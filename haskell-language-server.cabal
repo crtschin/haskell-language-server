@@ -1585,6 +1585,7 @@ library hls-refactor-plugin
     , ghc-boot
     , regex-tdfa
     , ghcide                == 2.14.0.0
+    , haskell-language-server:hls-exactprint-utils
     , hls-plugin-api        == 2.14.0.0
     , lsp
     , text
@@ -1766,6 +1767,18 @@ test-suite hls-notes-plugin-tests
 -- export plugin
 -----------------------------
 
+library hls-exactprint-utils
+  import: defaults, pedantic, warnings
+  exposed-modules:
+    Development.IDE.GHC.ExactPrint.Annotation
+  hs-source-dirs:     hls-exactprint-utils/src
+  build-depends:
+    , ghc
+    , ghc-exactprint
+    , ghcide          == 2.14.0.0
+  default-extensions:
+      CPP
+
 flag export
   description: Enable export plugin
   default:     True
@@ -1788,12 +1801,14 @@ library hls-export-plugin
     Ide.Plugin.Export.Exports
     Ide.Plugin.Export.Utils
   hs-source-dirs:     plugins/hls-export-plugin/src
+  default-language:   GHC2021
   build-depends:
     , aeson
     , containers
     , ghc
     , ghc-exactprint
     , ghcide          == 2.14.0.0
+    , haskell-language-server:hls-exactprint-utils
     , hiedb           ^>= 0.8.0.0
     , hls-plugin-api  == 2.14.0.0
     , lens
@@ -1801,7 +1816,8 @@ library hls-export-plugin
     , mtl
     , text
   default-extensions:
-      DataKinds
+    , DataKinds
+    , LambdaCase
     , OverloadedStrings
 
 test-suite hls-export-plugin-tests

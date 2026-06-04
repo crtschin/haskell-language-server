@@ -67,6 +67,8 @@ import           Development.IDE.GHC.Compat              hiding (parseImport,
                                                           parsePattern,
                                                           parseType)
 import           Development.IDE.GHC.Compat.ExactPrint
+import           Development.IDE.GHC.ExactPrint.Annotation (epl, isCommaAnn,
+                                                            removeTrailingCommaAnn)
 import           Development.IDE.Graph                   (RuleResult, Rules)
 import           Development.IDE.Graph.Classes
 import           Generics.SYB
@@ -97,7 +99,6 @@ import           GHC                                     ( Anchor (..),
                                                           NameAnn (..),
                                                           SrcSpanAnn' (SrcSpanAnn),
                                                           SrcSpanAnnA,
-                                                          TrailingAnn (AddCommaAnn),
                                                           emptyComments,
                                                           realSrcSpan,
                                                           spanAsAnchor)
@@ -125,7 +126,6 @@ import           GHC                                     (
                                                           NameAdornment (..),
                                                           NameAnn (..),
                                                           SrcSpanAnnA,
-                                                          TrailingAnn (..),
                                                           deltaPos,
                                                           emptyComments,
                                                           spanAsAnchor)
@@ -783,13 +783,6 @@ addParensToCtxt close_dp = addOpen . addClose
 #endif
         | otherwise = it
 
-epl :: Int -> EpaLocation
-#if MIN_VERSION_ghc(9,11,0)
-epl n = EpaDelta (UnhelpfulSpan UnhelpfulNoLocationInfo) (SameLine n) []
-#else
-epl n = EpaDelta (SameLine n) []
-#endif
-
 epAnn :: SrcSpan -> ann -> EpAnn ann
 epAnn srcSpan anns = EpAnn (spanAsAnchor srcSpan) anns emptyComments
 
@@ -801,20 +794,7 @@ modifyAnns x f = first ((fmap.fmap) f) x
 #endif
 
 removeComma :: SrcSpanAnnA -> SrcSpanAnnA
-#if MIN_VERSION_ghc(9,9,0)
-removeComma  (EpAnn anc (AnnListItem as) cs)
-  = EpAnn anc (AnnListItem (filter (not . isCommaAnn) as)) cs
-  where
-      isCommaAnn AddCommaAnn{} = True
-      isCommaAnn _             = False
-#else
-removeComma it@(SrcSpanAnn EpAnnNotUsed _) = it
-removeComma (SrcSpanAnn (EpAnn anc (AnnListItem as) cs) l)
-  = SrcSpanAnn (EpAnn anc (AnnListItem (filter (not . isCommaAnn) as)) cs) l
-  where
-      isCommaAnn AddCommaAnn{} = True
-      isCommaAnn _             = False
-#endif
+removeComma = removeTrailingCommaAnn
 
 addParens :: Bool -> GHC.NameAnn -> GHC.NameAnn
 #if MIN_VERSION_ghc(9,11,0)
@@ -840,7 +820,3 @@ addParens _ it = it
 
 removeTrailingComma :: GenLocated SrcSpanAnnA ast -> GenLocated SrcSpanAnnA ast
 removeTrailingComma = flip modifyAnns $ \(AnnListItem l) -> AnnListItem $ filter (not . isCommaAnn) l
-
-isCommaAnn :: TrailingAnn -> Bool
-isCommaAnn AddCommaAnn{} = True
-isCommaAnn _             = False
