@@ -130,12 +130,9 @@ quickCodeActionHandlers state _plId (CodeActionParams _ _ doc range _) = do
 
 addAction :: UnderCursor -> ParsedSource -> Maybe (Text, Text, [TextEdit])
 addAction under ps = case under of
-  ValueOrSig n
+  Decl flavor n
     | n `isExported` ps -> Nothing
-    | otherwise -> ("Export", printRdrName n,) <$> addExport ps (mkValueIE n)
-  TypeDecl n
-    | n `isExported` ps -> Nothing
-    | otherwise -> ("Export", printRdrName n,) <$> addExport ps (mkTypeAllIE n)
+    | otherwise -> ("Export", printRdrName n,) <$> addExport ps (mkExportIE flavor n)
   Constructor t c
     | c `isExported` ps -> Nothing
     | otherwise ->
@@ -145,8 +142,7 @@ addAction under ps = case under of
 
 removeAction :: UnderCursor -> ParsedSource -> Maybe (Text, Text, [TextEdit])
 removeAction under ps = case under of
-  ValueOrSig n -> removeNamed n
-  TypeDecl n -> removeNamed n
+  Decl _ n -> removeNamed n
   Constructor t c ->
     ("Unexport", printRdrName c,)
       <$> (removeConstructorExport t c ps <|> removeExport ps c)

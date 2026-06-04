@@ -5,18 +5,17 @@
 
 module Ide.Plugin.Export.ExactPrint
   ( LExportList
-  , mkValueIE
-  , mkTypeAllIE
+  , mkExportIE
   , availToLIE
   , mkExportList
   , appendIE
   , removeNamedIE
   , reconcileExportList
+  , expandExportList
   , addCtorUnderParent
   , removeCtorUnderParent
   , printExportList
   , toDeltaExportList
-  , isInIE
   ) where
 
 import           Control.Lens                              (_last, over)
@@ -83,17 +82,19 @@ import           GHC.Types.SrcLoc                          (UnhelpfulSpanReason 
 #else
 import           GHC                                       (AddEpAnn (..))
 #endif
-import           Development.IDE.GHC.Compat.Util
-import           Development.IDE.GHC.ExactPrint.Annotation (ensureTrailingComma,
+import           Development.IDE.GHC.ExactPrint.Annotation (addParens,
+                                                            ensureTrailingComma,
                                                             epl, isCommaAnn,
+                                                            modifyAnns,
                                                             removeTrailingCommaAnn,
                                                             trailingAnns,
                                                             withTrailingComma)
+import           GHC                                       (LocatedN)
+import           Ide.Plugin.Export.Cursor                  (ExportFlavor (..))
 import           Ide.Plugin.Export.Utils
 
--- | Located @[LIE GhcPs]@ — the shape of an export list. Aliases either
--- 'LocatedL' (pre-9.12) or 'LocatedLI' (9.12+ added a "hiding" slot to the
--- list annotation).
+-- | Located @[LIE GhcPs]@, the shape of an export list. Aliases either
+-- 'LocatedL' (pre-9.12) or 'LocatedLI'.
 #if MIN_VERSION_ghc(9,11,0)
 type LExportList = LocatedLI [LIE GhcPs]
 #else
@@ -110,23 +111,39 @@ availToLIE = \case
   where
     nameRdr = mkRdrUnqual . nameOccName
 
--- | @foo@
+mkExportIE :: ExportFlavor -> RdrName -> LIE GhcPs
+mkExportIE flavor rdr = case flavor of
+  ExportName    -> ieVar (mkWrappedName WrapPlain rdr)
+  ExportPattern -> ieVar (mkWrappedName WrapPattern rdr)
+  ExportFamily  -> mkTypeAbsIE' (mkWrappedName keywordWrap rdr)
+  ExportAll     -> mkTypeAllIE' (mkWrappedName keywordWrap rdr)
+  where
+    keywordWrap
+      | isSymOcc (rdrNameOcc rdr) = WrapType
+      | otherwise                 = WrapPlain
+
 mkValueIE :: RdrName -> LIE GhcPs
-mkValueIE rdr =
+mkValueIE = ieVar . mkIEName
+
+ieVar :: LIEWrappedName GhcPs -> LIE GhcPs
+ieVar w =
   reLocA $ L noSrcSpan $ IEVar
 #if MIN_VERSION_ghc(9,8,0)
     Nothing
 #else
     noExtField
 #endif
-    (mkIEName rdr)
+    w
 #if MIN_VERSION_ghc(9,9,0)
     Nothing
 #endif
 
 -- | Bare @T@ (no constructors listed).
 mkTypeAbsIE :: RdrName -> LIE GhcPs
-mkTypeAbsIE rdr =
+mkTypeAbsIE = mkTypeAbsIE' . mkIEName
+
+mkTypeAbsIE' :: LIEWrappedName GhcPs -> LIE GhcPs
+mkTypeAbsIE' w =
   reLocA $ L noSrcSpan $ IEThingAbs
 #if MIN_VERSION_ghc(9,11,0)
     Nothing
@@ -135,14 +152,17 @@ mkTypeAbsIE rdr =
 #else
     noAnn
 #endif
-    (mkIEName rdr)
+    w
 #if MIN_VERSION_ghc(9,9,0)
     Nothing
 #endif
 
 -- | @T(..)@
 mkTypeAllIE :: RdrName -> LIE GhcPs
-mkTypeAllIE rdr =
+mkTypeAllIE = mkTypeAllIE' . mkIEName
+
+mkTypeAllIE' :: LIEWrappedName GhcPs -> LIE GhcPs
+mkTypeAllIE' w =
   reLocA $ L noSrcSpan $ IEThingAll
 #if MIN_VERSION_ghc(9,11,0)
     (Nothing, (EpTok (epl 1), EpTok (epl 0), EpTok (epl 0)))
@@ -170,7 +190,7 @@ mkTypeAllIE rdr =
        ]
        emptyComments)
 #endif
-    (mkIEName rdr)
+    w
 #if MIN_VERSION_ghc(9,9,0)
     Nothing
 #endif
@@ -250,14 +270,33 @@ overThingWithChildren f (IEThingWith x n w cs)      = IEThingWith x n w (f cs)
 #endif
 overThingWithChildren _ ie                          = ie
 
--- | Internal: wrap an 'RdrName' as an 'IEName' located node.
+data WrapKind = WrapPlain | WrapPattern | WrapType
+
 mkIEName :: RdrName -> LIEWrappedName GhcPs
-mkIEName rdr =
-  reLocA $ L noSrcSpan $ IEName
-#if MIN_VERSION_ghc(9,5,0)
-    noExtField
+mkIEName = mkWrappedName WrapPlain
+
+-- | Wrap an 'RdrName' as an export item. Operators are parenthesized and any
+-- @pattern@ or @type@ keyword is followed by a single space.
+mkWrappedName :: WrapKind -> RdrName -> LIEWrappedName GhcPs
+mkWrappedName kind rdr =
+  reLocA $ L noSrcSpan $ case kind of
+    WrapPlain   -> IEName noExtField plainName
+    WrapPattern -> IEPattern keywordTok spacedName
+    WrapType    -> IEType keywordTok spacedName
+  where
+    plainName = parenthesizeOperator (reLocA (L noSrcSpan rdr))
+    spacedName = setEntryDP plainName (SameLine 1)
+    keywordTok =
+#if MIN_VERSION_ghc(9,11,0)
+      EpTok (epl 0)
+#else
+      epl 0
 #endif
-    (reLocA (L noSrcSpan rdr))
+
+parenthesizeOperator :: LocatedN RdrName -> LocatedN RdrName
+parenthesizeOperator ln
+  | isSymOcc (rdrNameOcc (unLoc ln)) = modifyAnns ln (addParens True)
+  | otherwise = ln
 
 appendIE :: LIE GhcPs -> LExportList -> LExportList
 appendIE item (L l items) = L l (fixLast items ++ [newItem (not (null items))])
@@ -289,31 +328,35 @@ removeNamedIE name (L l items) = case break matches items of
     in Just (L l kept'')
   where
     fs = rdrNameFS name
-    matches (L _ ie) = maybe False ((== fs) . rdrNameFS) (ieParentName ie)
+    matches (L _ ie) = parentNameIs fs ie
     resetFirstEntryDP []     = []
     resetFirstEntryDP (x:xs) = setEntryDP x (SameLine 0) : xs
 
--- | Rewrite an existing export list to contain exactly @desired@ (matched by parent
--- name), keeping surviving items' layout. A matched item takes the desired entry's
--- shape, so a stale @T(C1)@ becomes the wanted @T(..)@ or @T@.
+-- | Append every desired item whose parent is not already listed, leaving the
+-- existing items and their layout untouched.
+expandExportList :: [LIE GhcPs] -> LExportList -> LExportList
+expandExportList desired lst@(L _ items0) = foldl' (flip appendIE) lst additions
+  where
+    existingFSs = [rdrNameFS p | L _ ie <- items0, Just p <- [ieParentName ie]]
+    additions   = [item | item@(L _ ie) <- desired, Just p <- [ieParentName ie], rdrNameFS p `notElem` existingFSs]
+
+-- | Rewrite an existing export list to contain exactly @desired@, keeping
+-- surviving items' layout.
 reconcileExportList :: [LIE GhcPs] -> LExportList -> LExportList
 reconcileExportList desired lst@(L _ items0) =
-    foldl' (flip appendIE) (overItems (map swap) trimmed) additions
+  expandExportList desired (fmap (map reshapeToDesired) trimmed)
   where
     desiredByFS = [(rdrNameFS p, ie) | L _ ie <- desired, Just p <- [ieParentName ie]]
-    desiredFSs  = map fst desiredByFS
-    existingFSs = [rdrNameFS p | L _ ie <- items0, Just p <- [ieParentName ie]]
+    desiredFSs = map fst desiredByFS
 
     staleNames = [p | L _ ie <- items0, Just p <- [ieParentName ie], rdrNameFS p `notElem` desiredFSs]
-    additions  = [item | item@(L _ ie) <- desired, Just p <- [ieParentName ie], rdrNameFS p `notElem` existingFSs]
-
     trimmed = foldl' (\acc n -> fromMaybe acc (removeNamedIE n acc)) lst staleNames
 
-    swap (L ann ie) = case ieParentName ie of
-      Just p | Just newIe <- lookup (rdrNameFS p) desiredByFS -> L ann newIe
-      _                                                       -> L ann ie
-
-    overItems f (L l items) = L l (f items)
+    reshapeToDesired (L ann ie)
+      | Just p <- ieParentName ie,
+        Just newIe <- lookup (rdrNameFS p) desiredByFS =
+          L ann newIe
+      | otherwise = L ann ie
 
 -- | 'Nothing' iff @ctor@ is already exported (via @T(..)@ or @T(...,ctor,...)@).
 addCtorUnderParent ::
@@ -335,12 +378,12 @@ addCtorUnderParent parent ctor lst@(L l items) =
     ctorFS = rdrNameFS ctor
 
     ctorPresence cs
-      | any ((== ctorFS) . rdrNameFS . ieWrappedRdrName . unLoc) cs = CtorPresent
+      | any ((== ctorFS) . lieWrappedNameFS) cs = CtorPresent
       | otherwise = CtorAbsent
 
     findParent [] = ParentNotFound
     findParent (L _ ie : rest)
-      | maybe False ((== parentFS) . rdrNameFS) (ieParentName ie) =
+      | parentNameIs parentFS ie =
           case ie of
             IEThingAll{} -> FoundIEThingAll
             IEThingAbs{} -> FoundIEThingAbs
@@ -349,7 +392,7 @@ addCtorUnderParent parent ctor lst@(L l items) =
       | otherwise = findParent rest
 
     transformParent f (L itemLoc ie)
-      | maybe False ((== parentFS) . rdrNameFS) (ieParentName ie) = L itemLoc (f ie)
+      | parentNameIs parentFS ie = L itemLoc (f ie)
       | otherwise = L itemLoc ie
 
     extendThingWith :: IE GhcPs -> IE GhcPs
@@ -372,10 +415,10 @@ removeCtorUnderParent parent ctor (L l items) =
     ctorFS = rdrNameFS ctor
 
     step acc lie@(L itemLoc ie)
-      | maybe False ((== parentFS) . rdrNameFS) (ieParentName ie)
+      | parentNameIs parentFS ie
       , Just cs <- ieThingWithChildren ie
-      , any ((== ctorFS) . rdrNameFS . ieWrappedRdrName . unLoc) cs =
-          let cs' = filter ((/= ctorFS) . rdrNameFS . ieWrappedRdrName . unLoc) cs
+      , any ((== ctorFS) . lieWrappedNameFS) cs =
+          let cs' = filter ((/= ctorFS) . lieWrappedNameFS) cs
               ie' = case cs' of
                       [] -> downgradeToAbs ie
                       _  -> overThingWithChildren (const (normaliseChildren cs')) ie
@@ -417,7 +460,3 @@ data FindParentResult
 
 data CtorPresence = CtorAbsent | CtorPresent
   deriving Eq
-
-isInIE :: FastString -> IE GhcPs -> Bool
-isInIE n =
-  maybe False (any ((== n) . rdrNameFS . ieWrappedRdrName . unLoc)) . ieThingWithChildren

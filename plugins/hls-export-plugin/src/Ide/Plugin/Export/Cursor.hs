@@ -1,6 +1,9 @@
-{-# LANGUAGE LambdaCase #-}
-
-module Ide.Plugin.Export.Cursor (UnderCursor (..), locateUnderCursor) where
+module Ide.Plugin.Export.Cursor
+  ( ExportFlavor (..)
+  , UnderCursor (..)
+  , locateUnderCursor
+  , moduleExports
+  ) where
 
 import           Control.Applicative        ((<|>))
 import           Data.Foldable              (toList)
@@ -9,9 +12,16 @@ import           Data.Maybe
 import           Development.IDE
 import           Development.IDE.GHC.Compat
 
+-- | How a top-level entity is rendered in an export list.
+data ExportFlavor
+  = ExportName     -- ^ bare @x@. An operator is parenthesized with no @type@ keyword. Values and type synonyms.
+  | ExportPattern  -- ^ @pattern X@.
+  | ExportFamily   -- ^ bare @T@. An operator becomes @type (:<)@. Type and data families.
+  | ExportAll      -- ^ @T(..)@. An operator becomes @type (:<)(..)@. Data, newtype, and class.
+  deriving Eq
+
 data UnderCursor
-  = ValueOrSig RdrName
-  | TypeDecl RdrName
+  = Decl ExportFlavor RdrName
   | Constructor RdrName RdrName
   | Header
 
@@ -31,22 +41,39 @@ classifyHeader pos mod = inName <|> inExports
     inName = isIn $ hsmodName mod
     inExports = isIn $ hsmodExports mod
 
+-- | The exportable entities a top-level declaration defines, each with its
+-- export flavor and located name.
+declEntities :: HsDecl GhcPs -> [(ExportFlavor, LIdP GhcPs)]
+declEntities = \case
+  ValD _ (PatSynBind _ PSB {psb_id = lname}) -> [(ExportPattern, lname)]
+  ValD _ FunBind {fun_id = lname}            -> [(ExportName, lname)]
+  TyClD _ DataDecl {tcdLName = lname}        -> [(ExportAll, lname)]
+  TyClD _ ClassDecl {tcdLName = lname}       -> [(ExportAll, lname)]
+  TyClD _ SynDecl {tcdLName = lname}         -> [(ExportName, lname)]
+  TyClD _ FamDecl {tcdFam = fam}             -> [(ExportFamily, fdLName fam)]
+  _                                          -> []
+
 classifyDecl :: Position -> HsDecl GhcPs -> Maybe UnderCursor
-classifyDecl pos = \case
-  ValD _ FunBind {fun_id = lname}
-    | onName lname -> Just (ValueOrSig (unLoc lname))
-  SigD _ (TypeSig _ names _) ->
-    ValueOrSig . unLoc <$> listToMaybe (filter onName names)
-  TyClD _ DataDecl {tcdLName = lname, tcdDataDefn = HsDataDefn {dd_cons = cons}}
-    | Just c <- constructorUnderCursor pos cons -> Just (Constructor (unLoc lname) c)
-    | onName lname -> Just (TypeDecl (unLoc lname))
-  TyClD _ SynDecl {tcdLName = lname}
-    | onName lname -> Just (TypeDecl (unLoc lname))
-  TyClD _ ClassDecl {tcdLName = lname}
-    | onName lname -> Just (TypeDecl (unLoc lname))
-  _ -> Nothing
+classifyDecl pos decl =
+      listToMaybe [Decl flavor (unLoc n) | (flavor, n) <- declEntities decl, onName n]
+  <|> typeSigUnderCursor
+  <|> constructorUnderDecl
   where
     onName (L l _) = pos `isInsideSrcSpan` locA l
+    -- A signature is not a definition (so not in 'declEntities'), but its name
+    -- is still a valid place to invoke the export action from.
+    typeSigUnderCursor = case decl of
+      SigD _ (TypeSig _ names _) -> Decl ExportName . unLoc <$> find onName names
+      _                          -> Nothing
+    constructorUnderDecl = case decl of
+      TyClD _ DataDecl {tcdLName = lname, tcdDataDefn = HsDataDefn {dd_cons = cons}}
+        -> Constructor (unLoc lname) <$> constructorUnderCursor pos cons
+      _ -> Nothing
+
+-- | Every top-level entity the module defines, for the "export all" action.
+moduleExports :: ParsedSource -> [(ExportFlavor, RdrName)]
+moduleExports ps =
+  [(flavor, unLoc n) | decl <- hsmodDecls (unLoc ps), (flavor, n) <- declEntities (unLoc decl)]
 
 constructorUnderCursor :: Position -> DataDefnCons (LConDecl GhcPs) -> Maybe RdrName
 constructorUnderCursor pos cons =
