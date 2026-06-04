@@ -192,6 +192,102 @@ main = defaultTestRunner $ testGroup "Export"
             noExportOffered doc (rangeAt 9 2)  -- on `baz1` inside `class Baz a where`
         ]
 
+    , testGroup "Add: layout variants"
+        [ testCase "add to an empty export list" $ runExport $ \_dir -> do
+            doc <- openDoc "AddExportEmpty.hs" "haskell"
+            waitForKickDone
+            executeExportAction doc (rangeAt 2 0)  -- on `foo`
+            containsAfter doc ["module AddExportEmpty (foo) where"]
+
+        , testCase "append after a trailing comma" $ runExport $ \_dir -> do
+            doc <- openDoc "AddExportTrailingComma.hs" "haskell"
+            waitForKickDone
+            executeExportAction doc (rangeAt 7 0)  -- on `bar`
+            containsAfter doc ["( foo, bar"]
+
+        , testCase "preserve a haddock comment between items" $ runExport $ \_dir -> do
+            doc <- openDoc "AddExportComment.hs" "haskell"
+            waitForKickDone
+            executeExportAction doc (rangeAt 16 0)  -- on `quux`
+            containsAfter doc ["  -- * For testing\n  , baz\n  , quux\n  ) where"]
+        ]
+
+    , testGroup "Add: declaration kinds"
+        [ testCase "function operator is parenthesized" $ runExport $ \_dir -> do
+            doc <- openDoc "AddExportKinds.hs" "haskell"
+            waitForKickDone
+            executeExportAction doc (rangeAt 8 1)  -- on `(<|)`
+            containsAfter doc ["(placeholder, (<|))"]
+
+        , testCase "infix function exports bare name" $ runExport $ \_dir -> do
+            doc <- openDoc "AddExportKinds.hs" "haskell"
+            waitForKickDone
+            executeExportAction doc (rangeAt 11 3)  -- on `f`
+            containsAfter doc ["(placeholder, f)"]
+
+        , testCase "newtype exports as T(..)" $ runExport $ \_dir -> do
+            doc <- openDoc "AddExportKinds.hs" "haskell"
+            waitForKickDone
+            executeExportAction doc (rangeAt 13 8)  -- on `NT`
+            containsAfter doc ["placeholder, NT(..)", "placeholder, NT (..)"]
+
+        , testCase "type synonym exports bare" $ runExport $ \_dir -> do
+            doc <- openDoc "AddExportKinds.hs" "haskell"
+            waitForKickDone
+            executeExportAction doc (rangeAt 15 5)  -- on `Syn`
+            containsAfter doc ["(placeholder, Syn)"]
+
+        , testCase "type family exports bare" $ runExport $ \_dir -> do
+            doc <- openDoc "AddExportKinds.hs" "haskell"
+            waitForKickDone
+            executeExportAction doc (rangeAt 17 12)  -- on `TF`
+            containsAfter doc ["(placeholder, TF)"]
+
+        , testCase "pattern synonym gets a pattern prefix" $ runExport $ \_dir -> do
+            doc <- openDoc "AddExportKinds.hs" "haskell"
+            waitForKickDone
+            executeExportAction doc (rangeAt 20 9)  -- on `Pat`
+            containsAfter doc ["(placeholder, pattern Pat)"]
+
+        , testCase "data operator gets type keyword and (..)" $ runExport $ \_dir -> do
+            doc <- openDoc "AddExportKinds.hs" "haskell"
+            waitForKickDone
+            executeExportAction doc (rangeAt 22 7)  -- on `(:<)`
+            containsAfter doc ["placeholder, type (:<)(..)", "placeholder, type (:<) (..)"]
+        ]
+
+    , testGroup "Add: type-level operators"
+        [ testCase "type synonym operator has no type keyword" $ runExport $ \_dir -> do
+            doc <- openDoc "AddExportTypeOps.hs" "haskell"
+            waitForKickDone
+            executeExportAction doc (rangeAt 8 7)  -- on `(:<>)`
+            containsAfter doc ["(placeholder, (:<>))"]
+
+        , testCase "type family operator gets type keyword" $ runExport $ \_dir -> do
+            doc <- openDoc "AddExportTypeOps.hs" "haskell"
+            waitForKickDone
+            executeExportAction doc (rangeAt 10 14)  -- on `(:+:)`
+            containsAfter doc ["(placeholder, type (:+:))"]
+
+        , testCase "typeclass operator gets type keyword and (..)" $ runExport $ \_dir -> do
+            doc <- openDoc "AddExportTypeOps.hs" "haskell"
+            waitForKickDone
+            executeExportAction doc (rangeAt 12 8)  -- on `(:*:)`
+            containsAfter doc ["placeholder, type (:*:)(..)", "placeholder, type (:*:) (..)"]
+
+        , testCase "newtype operator gets type keyword and (..)" $ runExport $ \_dir -> do
+            doc <- openDoc "AddExportTypeOps.hs" "haskell"
+            waitForKickDone
+            executeExportAction doc (rangeAt 14 10)  -- on `(:->)`
+            containsAfter doc ["placeholder, type (:->)(..)", "placeholder, type (:->) (..)"]
+
+        , testCase "pattern synonym operator is parenthesized" $ runExport $ \_dir -> do
+            doc <- openDoc "AddExportTypeOps.hs" "haskell"
+            waitForKickDone
+            executeExportAction doc (rangeAt 16 11)  -- on `(:++)`
+            containsAfter doc ["(placeholder, pattern (:++))"]
+        ]
+
     , testGroup "Add: negative cases"
         [ testCase "no action on implicit module" $ runExport $ \_dir -> do
             doc <- openDoc "Implicit.hs" "haskell"
@@ -202,6 +298,16 @@ main = defaultTestRunner $ testGroup "Export"
             doc <- openDoc "AddExport.hs" "haskell"
             waitForKickDone
             noExportOffered doc (rangeAt 6 6)  -- col 6 is on the `2` of `bar = 2`
+
+        , testCase "no action on a where-bound name" $ runExport $ \_dir -> do
+            doc <- openDoc "AddExportNegatives.hs" "haskell"
+            waitForKickDone
+            noExportOffered doc (rangeAt 7 8)  -- on `whereBound`
+
+        , testCase "no action on a record field" $ runExport $ \_dir -> do
+            doc <- openDoc "AddExportNegatives.hs" "haskell"
+            waitForKickDone
+            noExportOffered doc (rangeAt 9 18)  -- on `recField`
         ]
 
     , testGroup "Remove: value bindings"
