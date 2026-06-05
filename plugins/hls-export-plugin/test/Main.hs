@@ -6,7 +6,7 @@ import           Data.Foldable              (find)
 import           Data.List                  (sort, tails)
 import qualified Data.Text                  as T
 import           Development.IDE.Test       (referenceReady)
-import           Ide.Plugin.Export          (Log, descriptor)
+import           Ide.Plugin.Export          (descriptor)
 import qualified Language.LSP.Protocol.Lens as L
 import           System.FilePath            (equalFilePath, joinPath,
                                              splitDirectories, (</>))
@@ -14,8 +14,8 @@ import           Test.Hls
 import           Test.Hls.FileSystem        (directCradle, file,
                                              mkVirtualFileTree, text)
 
-plugin :: PluginTestDescriptor Log
-plugin = mkPluginTestDescriptor descriptor "export"
+plugin :: PluginTestDescriptor ()
+plugin = mkPluginTestDescriptor' descriptor "export"
 
 testDataDir :: FilePath
 testDataDir = "plugins" </> "hls-export-plugin" </> "test" </> "testdata"
@@ -25,14 +25,6 @@ runExport act =
     runSessionWithTestConfig def
         { testDirLocation = Left testDataDir
         , testPluginDescriptor = plugin
-        } act
-
-runExportResolve :: (FilePath -> Session a) -> IO a
-runExportResolve act =
-    runSessionWithTestConfig def
-        { testDirLocation = Left testDataDir
-        , testPluginDescriptor = plugin
-        , testConfigCaps = codeActionResolveCaps
         } act
 
 testDataDirExposed :: FilePath
@@ -96,11 +88,31 @@ noExportOffered, noRemoveOffered :: TextDocumentIdentifier -> Range -> Session (
 noExportOffered = noActionWithPrefix "Export `"
 noRemoveOffered = noActionWithPrefix "Unexport `"
 
+-- | Fail unless some variant is an infix of the text. The message dumps it.
+assertAnyInfix :: T.Text -> [T.Text] -> Assertion
+assertAnyInfix hay variants =
+    any (`T.isInfixOf` hay) variants
+        @? ("Expected one of " <> show variants <> " in:\n" <> T.unpack hay)
+
+-- | Fail if any needle is an infix of the text.
+assertNoneInfix :: T.Text -> [T.Text] -> Assertion
+assertNoneInfix hay needles =
+    not (any (`T.isInfixOf` hay) needles)
+        @? ("Expected none of " <> show needles <> " in:\n" <> T.unpack hay)
+
 containsAfter :: TextDocumentIdentifier -> [T.Text] -> Session ()
-containsAfter doc expected = do
-    contents <- documentContents doc
-    liftIO $ any (`T.isInfixOf` contents) expected
-        @? ("Expected one of " <> show expected <> " in:\n" <> T.unpack contents)
+containsAfter doc expected = documentContents doc >>= liftIO . (`assertAnyInfix` expected)
+
+-- | Assert a code action with this exact title is (or is not) offered.
+assertOffered, assertNotOffered :: T.Text -> TextDocumentIdentifier -> Range -> Session ()
+assertOffered    = titleOffered True
+assertNotOffered = titleOffered False
+
+titleOffered :: Bool -> T.Text -> TextDocumentIdentifier -> Range -> Session ()
+titleOffered want title doc range = do
+    titles <- codeActionTitles doc range
+    liftIO $ (title `elem` titles) == want
+        @? (T.unpack title <> ": expected offered=" <> show want <> ", saw: " <> show titles)
 
 rangeAt :: UInt -> UInt -> Range
 rangeAt l c = Range (Position l c) (Position l c)
@@ -422,91 +434,119 @@ main = defaultTestRunner $ testGroup "Export"
         ]
 
     , testGroup "Export explicitly"
-        [ testCase "implicit module: exports only externally-referenced names" $ runExportResolve $ \_dir -> do
+        [ testCase "implicit module: exports only externally-referenced names" $ runExportResolveExposed $ \_dir -> do
             _consumer <- openDoc "UsesMakeExplicitUsed.hs" "haskell"
             target    <- openDoc "MakeExplicitUsed.hs" "haskell"
             waitForIndex "UsesMakeExplicitUsed.hs"
-            runExplicitAction target (rangeAt 0 7)
-            contents <- documentContents target
-            let header = exportHeader contents
-            liftIO $ any (`T.isInfixOf` header) ["usedByOther, T (..)", "T (..), usedByOther"]
-                @? ("Expected usedByOther and T (..) separated by comma+space in header:\n" <> T.unpack header)
-            liftIO $ not (",)" `T.isInfixOf` header)
-                @? ("Export list should not end with a trailing comma:\n" <> T.unpack header)
-            liftIO $ not ("usedOnlyInternally" `T.isInfixOf` header)
-                @? ("usedOnlyInternally should not be exported:\n" <> T.unpack header)
-            liftIO $ not ("unusedEntirely" `T.isInfixOf` header)
-                @? ("unusedEntirely should not be exported:\n" <> T.unpack header)
+            header <- exportHeaderAfter "Export explicitly" target
+            liftIO $ do
+                assertAnyInfix  header ["usedByOther, T (..)", "T (..), usedByOther"]
+                assertNoneInfix header [",)", "usedOnlyInternally", "unusedEntirely"]
 
-        , testCase "explicit module: refines list to externally-referenced names" $ runExportResolve $ \_dir -> do
+        , testCase "explicit module: refines list to externally-referenced names" $ runExportResolveExposed $ \_dir -> do
             _consumer <- openDoc "UsesRefineExports.hs" "haskell"
             target    <- openDoc "RefineExports.hs" "haskell"
             waitForIndex "UsesRefineExports.hs"
-            runExplicitAction target (rangeAt 0 7)
-            contents <- documentContents target
-            let header = exportHeader contents
-            liftIO $ any (`T.isInfixOf` header) ["used, T (..)", "T (..), used"]
-                @? ("Expected used and T (..) separated by comma+space in header:\n" <> T.unpack header)
-            liftIO $ not (",)" `T.isInfixOf` header)
-                @? ("Export list should not end with a trailing comma:\n" <> T.unpack header)
-            liftIO $ not ("unused" `T.isInfixOf` header)
-                @? ("unused should not be exported:\n" <> T.unpack header)
-            liftIO $ not ("UnusedT" `T.isInfixOf` header)
-                @? ("UnusedT should not be exported:\n" <> T.unpack header)
+            header <- exportHeaderAfter "Export explicitly" target
+            liftIO $ do
+                assertAnyInfix  header ["used, T (..)", "T (..), used"]
+                assertNoneInfix header [",)", "unused", "UnusedT"]
 
-        , testCase "explicit module: preserves multi-line layout when trimming" $ runExportResolve $ \_dir -> do
+        , testCase "explicit module: preserves multi-line layout when trimming" $ runExportResolveExposed $ \_dir -> do
             _consumer <- openDoc "UsesMultilineRefine.hs" "haskell"
             target    <- openDoc "MultilineRefine.hs" "haskell"
             waitForIndex "UsesMultilineRefine.hs"
-            runExplicitAction target (rangeAt 0 7)
+            runActionWithTitle "Export explicitly" target (rangeAt 0 7)
             contents <- documentContents target
-            liftIO $ "  ( used\n  , T (..)\n  ) where" `T.isInfixOf` contents
-                @? ("Expected the trimmed list to keep its leading-comma layout:\n" <> T.unpack contents)
-            liftIO $ not ("unused" `T.isInfixOf` fst (T.breakOn "where" contents))
-                @? ("unused should have been trimmed from the export list:\n" <> T.unpack contents)
+            liftIO $ do
+                assertAnyInfix  contents ["  ( used\n  , T (..)\n  ) where"]
+                assertNoneInfix (fst (T.breakOn "where" contents)) ["unused"]
 
-        , testCase "no action when cursor is off the module header" $ runExportResolve $ \_dir -> do
+        , testCase "no action when cursor is off the module header" $ runExportResolveExposed $ \_dir -> do
             doc <- openDoc "MakeExplicitUsed.hs" "haskell"
             waitForKickDone
-            titles <- codeActionTitles doc (rangeAt 3 0)  -- on `usedByOther`
-            liftIO $ "Export explicitly" `notElem` titles
-                @? ("Did not expect Export explicitly action, saw: " <> show titles)
+            assertNotOffered "Export explicitly" doc (rangeAt 3 0)  -- on `usedByOther`
 
         , testCase "not offered on a module exposed by the library" $ runExportResolveExposed $ \_dir -> do
             -- ExposedApi is exposed by the library, so its exports are public API and the action must not appear.
             target <- openDoc "ExposedApi.hs" "haskell"
             waitForKickDone
-            titles <- codeActionTitles target (rangeAt 0 7)
-            liftIO $ "Export explicitly" `notElem` titles
-                @? ("Export explicitly must not be offered on an exposed module, saw: " <> show titles)
+            assertNotOffered "Export explicitly" target (rangeAt 0 7)
 
         , testCase "still offered on a non-exposed module" $ runExportResolveExposed $ \_dir -> do
             -- InternalApi is not exposed by the library, so the trim action still applies.
             target <- openDoc "InternalApi.hs" "haskell"
             waitForKickDone
-            titles <- codeActionTitles target (rangeAt 0 7)
-            liftIO $ "Export explicitly" `elem` titles
-                @? ("Export explicitly should be offered on a non-exposed module, saw: " <> show titles)
+            assertOffered "Export explicitly" target (rangeAt 0 7)
 
         , testCase "not offered when no cabal file can be found" $ runExportNoCabal $ \_dir -> do
             -- Without a cabal file the public API is unknown, so the action is withheld.
             target <- openDoc "NoCabal.hs" "haskell"
             waitForKickDone
-            titles <- codeActionTitles target (rangeAt 0 7)
-            liftIO $ "Export explicitly" `notElem` titles
-                @? ("Export explicitly must be withheld without cabal info, saw: " <> show titles)
+            assertNotOffered "Export explicitly" target (rangeAt 0 7)
+        ]
+
+    , testGroup "Export all symbols"
+        [ testCase "implicit module: lists every top-level symbol with its flavor" $ runExportResolveExposed $ \_dir -> do
+            target <- openDoc "ExportAll.hs" "haskell"
+            waitForKickDone
+            header <- exportHeaderAfter "Export all symbols" target
+            liftIO $ do
+                assertAnyInfix  header ["value"]
+                assertAnyInfix  header ["Rec (..)", "Rec(..)"]
+                assertAnyInfix  header ["NT (..)", "NT(..)"]
+                assertAnyInfix  header ["Cls (..)", "Cls(..)"]
+                assertAnyInfix  header ["Syn"]
+                -- record fields and class methods fold into (..), never listed standalone
+                assertNoneInfix header [",)", "field", "method"]
+
+        , testCase "partial explicit list: appends the missing symbols, keeps existing entries and re-exports" $ runExportResolveExposed $ \_dir -> do
+            target <- openDoc "ExpandExports.hs" "haskell"
+            waitForKickDone
+            header <- exportHeaderAfter "Export all symbols" target
+            liftIO $ do
+                assertAnyInfix  header ["alreadyListed"]            -- pre-existing local entry kept
+                assertAnyInfix  header ["notYetListed"]             -- missing local appended
+                assertAnyInfix  header ["Extra (..)", "Extra(..)"]
+                assertAnyInfix  header ["sort"]                     -- re-export of an import survives
+                assertNoneInfix header [",)"]
+                T.count "sort" header == 1
+                    @? ("Re-export should not be duplicated:\n" <> T.unpack header)
+
+        , testCase "offered regardless of whether the module is exposed" $ runExportResolveExposed $ \_dir -> do
+            -- Listing all exports is non-destructive, so unlike the trim action it
+            -- is not withheld on a library-exposed module.
+            target <- openDoc "ExposedApi.hs" "haskell"
+            waitForKickDone
+            assertOffered "Export all symbols" target (rangeAt 0 7)
+
+        , testCase "not offered when every symbol is already exported" $ runExportResolveExposed $ \_dir -> do
+            target <- openDoc "Complete.hs" "haskell"
+            waitForKickDone
+            assertNotOffered "Export all symbols" target (rangeAt 0 7)
+
+        , testCase "not offered off the module header" $ runExportResolveExposed $ \_dir -> do
+            target <- openDoc "ExportAll.hs" "haskell"
+            waitForKickDone
+            assertNotOffered "Export all symbols" target (rangeAt 2 0)  -- on `value`
         ]
     ]
 
-runExplicitAction :: TextDocumentIdentifier -> Range -> Session ()
-runExplicitAction doc range = do
+runActionWithTitle :: T.Text -> TextDocumentIdentifier -> Range -> Session ()
+runActionWithTitle title doc range = do
     actions <- rights . map toEither <$> getCodeActions doc range
-    case find ((== "Export explicitly") . (^. L.title)) actions of
+    case find ((== title) . (^. L.title)) actions of
         Just ca -> do
             resolved <- resolveCodeAction ca
             executeCodeAction resolved
         Nothing -> liftIO $ assertFailure $
-            "Export explicitly action not offered, saw: " <> show (map (^. L.title) actions)
+            T.unpack title <> " action not offered, saw: " <> show (map (^. L.title) actions)
 
 exportHeader :: T.Text -> T.Text
 exportHeader = T.takeWhile (/= '\n')
+
+-- | Run the titled action on the module header and return the rewritten header line.
+exportHeaderAfter :: T.Text -> TextDocumentIdentifier -> Session T.Text
+exportHeaderAfter title doc = do
+    runActionWithTitle title doc (rangeAt 0 7)
+    exportHeader <$> documentContents doc

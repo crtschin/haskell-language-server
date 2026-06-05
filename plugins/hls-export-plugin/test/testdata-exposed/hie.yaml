@@ -1,5 +1,2 @@
 cradle:
-  direct:
-    arguments:
-      - ExposedApi
-      - InternalApi
+  cabal:

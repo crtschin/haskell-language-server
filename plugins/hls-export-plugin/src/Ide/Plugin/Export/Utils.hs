@@ -2,7 +2,6 @@
 {-# LANGUAGE RecordWildCards #-}
 module Ide.Plugin.Export.Utils where
 
-import qualified Development.IDE.Core.Shake      as Shake
 import           Development.IDE.GHC.Compat
 import           Development.IDE.GHC.Compat.Util
 #ifdef hls_cabal
@@ -87,14 +86,6 @@ mkAction title = CodeAction {..}
     _edit = Nothing
     _command = Nothing
     _data_ = Nothing
-
-data Log
-  = LogShake Shake.Log
-  | forall a. (Pretty a) => LogResolve a
-
-instance Pretty Log where
-  pretty (LogShake l)   = pretty l
-  pretty (LogResolve l) = pretty l
 
 -- | Which export list a resolve request should build.
 data ExportMode

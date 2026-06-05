@@ -25,6 +25,7 @@ module Development.IDE.Core.Rules(
     usePropertyAction,
     usePropertyByPathAction,
     getHieFile,
+    getCradleDependencies,
     -- * Rules
     CompiledLinkables(..),
     getParsedModuleRule,
@@ -766,6 +767,15 @@ loadGhcSession recorder ghcSessionDepsConfig = do
     defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \(GhcSessionDeps_ fullModSummary) file -> do
         env <- use_ GhcSession file
         ghcSessionDepsDefinition fullModSummary ghcSessionDepsConfig env file
+
+-- | The cradle dependency files (e.g. the @.cabal@, @cabal.project@ or
+-- @stack.yaml@) that were used to load the session for the given file, as
+-- absolute paths.
+getCradleDependencies :: NormalizedFilePath -> Action [FilePath]
+getCradleDependencies file = do
+    IdeGhcSession{loadSessionFun} <- useNoFile_ GhcSessionIO
+    (_, deps) <- liftIO $ loadSessionFun $ fromNormalizedFilePath file
+    pure deps
 
 newtype GhcSessionDepsConfig = GhcSessionDepsConfig
     { fullModuleGraph :: Bool

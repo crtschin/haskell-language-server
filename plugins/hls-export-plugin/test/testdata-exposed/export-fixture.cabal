@@ -5,6 +5,15 @@ version:            0.1.0.0
 library
     exposed-modules:  ExposedApi
     other-modules:    InternalApi
+                      MakeExplicitUsed
+                      UsesMakeExplicitUsed
+                      RefineExports
+                      UsesRefineExports
+                      MultilineRefine
+                      UsesMultilineRefine
+                      ExportAll
+                      ExpandExports
+                      Complete
     hs-source-dirs:   .
     build-depends:    base
     default-language: Haskell2010
