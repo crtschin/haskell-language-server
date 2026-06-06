@@ -37,18 +37,26 @@ runExportWith extra hsFile act =
             waitForKickDone
             act doc
 
-executeExportAction :: TextDocumentIdentifier -> Range -> Session ()
-executeExportAction doc range = do
+executeByPrefix :: T.Text -> TextDocumentIdentifier -> Range -> Session ()
+executeByPrefix prefix doc range = do
     actions <- rights . map toEither <$> getCodeActions doc range
-    case filter (\ca -> "Export `" `T.isPrefixOf` (ca ^. L.title)) actions of
+    case filter (\ca -> prefix `T.isPrefixOf` (ca ^. L.title)) actions of
         (ca:_) -> executeCodeAction ca
-        []     -> liftIO $ assertFailure "Export `...` action not offered"
+        []     -> liftIO $ assertFailure (T.unpack prefix <> "...` action not offered")
 
-noExportOffered :: TextDocumentIdentifier -> Range -> Session ()
-noExportOffered doc range = do
+executeExportAction, executeRemoveAction :: TextDocumentIdentifier -> Range -> Session ()
+executeExportAction = executeByPrefix "Export `"
+executeRemoveAction = executeByPrefix "Unexport `"
+
+noActionWithPrefix :: T.Text -> TextDocumentIdentifier -> Range -> Session ()
+noActionWithPrefix prefix doc range = do
     titles <- sort . map (^. L.title) . rights . map toEither <$> getCodeActions doc range
-    liftIO $ not (any ("Export `" `T.isPrefixOf`) titles)
-        @? ("Did not expect an Export action; saw: " <> show titles)
+    liftIO $ not (any (prefix `T.isPrefixOf`) titles)
+        @? ("Did not expect " <> T.unpack prefix <> " action; saw: " <> show titles)
+
+noExportOffered, noRemoveOffered :: TextDocumentIdentifier -> Range -> Session ()
+noExportOffered = noActionWithPrefix "Export `"
+noRemoveOffered = noActionWithPrefix "Unexport `"
 
 -- | Fail unless some variant is an infix of the text. The message dumps it.
 assertAnyInfix :: T.Text -> [T.Text] -> Assertion
@@ -317,5 +325,84 @@ main = defaultTestRunner $ testGroup "Export"
                             @? "Export action should carry the unused-binding diagnostic"
                 []     -> liftIO $ assertFailure $
                             "Export `unused` not offered; saw: " <> show (map (^. L.title) actions)
+        ]
+
+    , testGroup "Remove: value bindings"
+        [ testCase "remove first value (foo)" $ runExport "RemoveExport.hs" $ \doc -> do
+            executeRemoveAction doc (rangeAt 3 0)
+            containsAfter doc ["module RemoveExport (Bar, Baz (Baz1))"]
+
+        , testCase "no remove action when value not in export list" $ runExport "AddExport.hs" $ \doc ->
+            noRemoveOffered doc (rangeAt 6 0)  -- `bar` not exported
+
+        , testCase "remove first item of a multi-line list keeps own-line layout" $ runExport "RemoveFirstMultiline.hs" $ \doc -> do
+            executeRemoveAction doc (rangeAt 6 0)  -- on `foo`, the first export
+            containsAfter doc ["( bar\n  , baz\n  ) where"]
+        ]
+
+    , testGroup "Remove: type declarations"
+        [ testCase "remove bare type (middle item)" $ runExport "RemoveExport.hs" $ \doc -> do
+            executeRemoveAction doc (rangeAt 5 5)  -- on `Bar`
+            containsAfter doc ["module RemoveExport (foo, Baz (Baz1))"]
+
+        , testCase "remove IEThingWith type removes whole entry" $ runExport "RemoveCtor.hs" $ \doc -> do
+            executeRemoveAction doc (rangeAt 2 5)  -- on `Foo` type
+            containsAfter doc ["module RemoveCtor (Bar (..), Baz1)"]
+
+        , testCase "remove IEThingAll type removes whole entry" $ runExport "RemoveCtor.hs" $ \doc -> do
+            executeRemoveAction doc (rangeAt 3 5)  -- on `Bar` type with (..)
+            containsAfter doc ["module RemoveCtor (Foo (Foo1, Foo2), Baz1)"]
+        ]
+
+    , testGroup "Remove: constructors"
+        [ testCase "remove sole constructor downgrades to bare type" $ runExport "RemoveExport.hs" $ \doc -> do
+            executeRemoveAction doc (rangeAt 6 11)  -- on `Baz1` in Baz(Baz1)
+            containsAfter doc ["module RemoveExport (foo, Bar, Baz)"]
+
+        , testCase "remove first constructor of T(C1, C2) yields T (C2)" $ runExport "RemoveCtor.hs" $ \doc -> do
+            executeRemoveAction doc (rangeAt 2 11)  -- on `Foo1` in Foo(Foo1, Foo2)
+            containsAfter doc ["Foo (Foo2)", "Foo(Foo2)"]
+
+        , testCase "remove second constructor of T(C1, C2) yields T (C1)" $ runExport "RemoveCtor.hs" $ \doc -> do
+            executeRemoveAction doc (rangeAt 2 18)  -- on `Foo2` in Foo(Foo1, Foo2)
+            containsAfter doc ["Foo (Foo1)", "Foo(Foo1)"]
+
+        , testCase "remove standalone-exported constructor" $ runExport "RemoveCtor.hs" $ \doc -> do
+            executeRemoveAction doc (rangeAt 4 11)  -- on `Baz1` standalone
+            containsAfter doc ["module RemoveCtor (Foo (Foo1, Foo2), Bar (..))"]
+
+        , testCase "constructor under IEThingAll suppresses remove action" $ runExport "RemoveCtor.hs" $ \doc ->
+            noRemoveOffered doc (rangeAt 3 11)  -- on `Bar1`, only Bar(..) in list
+
+        , testCase "constructor not in export list suppresses remove action" $ runExport "RemoveCtor.hs" $ \doc ->
+            noRemoveOffered doc (rangeAt 2 25)  -- on `Foo3`, not in any entry
+        ]
+
+    , testGroup "Remove: type classes"
+        [ testCase "remove class exported as T(..)" $ runExport "RemoveClass.hs" $ \doc -> do
+            executeRemoveAction doc (rangeAt 2 6)  -- on `Foo`
+            containsAfter doc ["module RemoveClass (Bar, Baz (baz1))"]
+
+        , testCase "remove class exported as bare T" $ runExport "RemoveClass.hs" $ \doc -> do
+            executeRemoveAction doc (rangeAt 5 6)  -- on `Bar`
+            containsAfter doc ["module RemoveClass (Foo (..), Baz (baz1))"]
+
+        , testCase "remove class exported as T(method)" $ runExport "RemoveClass.hs" $ \doc -> do
+            executeRemoveAction doc (rangeAt 8 6)  -- on `Baz`
+            containsAfter doc ["module RemoveClass (Foo (..), Bar)"]
+
+        , testCase "no remove action when class not in export list" $ runExport "RemoveClass.hs" $ \doc ->
+            noRemoveOffered doc (rangeAt 12 6)  -- on `Qux`, not exported
+
+        , testCase "no remove action on class method" $ runExport "RemoveClass.hs" $ \doc ->
+            noRemoveOffered doc (rangeAt 9 2)  -- on `baz1` inside `class Baz a where`
+        ]
+
+    , testGroup "Remove: negative cases"
+        [ testCase "no remove action on implicit module" $ runExport "Implicit.hs" $ \doc ->
+            noRemoveOffered doc (rangeAt 3 0)
+
+        , testCase "no remove action when cursor on RHS" $ runExport "RemoveExport.hs" $ \doc ->
+            noRemoveOffered doc (rangeAt 3 6)  -- on the `1` of `foo = 1`
         ]
     ]
