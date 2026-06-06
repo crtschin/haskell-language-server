@@ -1806,6 +1806,7 @@ library hls-export-plugin
     , aeson
     , containers
     , ghc
+    , extra
     , ghc-exactprint
     , ghcide          == 2.14.0.0
     , haskell-language-server:hls-exactprint-utils
@@ -1814,6 +1815,7 @@ library hls-export-plugin
     , lens
     , lsp >=2.8
     , mtl
+    , stm
     , text
   default-extensions:
     , DataKinds

@@ -4,6 +4,7 @@
 module Ide.Plugin.Export (descriptor) where
 
 import           Control.Applicative                          ((<|>))
+import           Control.Concurrent.STM                       (atomically)
 import           Control.Lens
 import           Control.Monad                                (filterM)
 import           Control.Monad.Error.Class                    (throwError)
@@ -17,9 +18,14 @@ import qualified Data.Text                                    as T
 import           Development.IDE
 import           Development.IDE.Core.PluginUtils             (runActionE, useE,
                                                                usesE)
-import           Development.IDE.Core.Shake                   (ShakeExtras (..))
+import           Development.IDE.Core.Shake                   (ShakeExtras (..),
+                                                               getDiagnostics)
 import           Development.IDE.GHC.Compat
+import           Development.IDE.GHC.Compat.Error             (_TcRnMessage,
+                                                               msgEnvelopeErrorL)
 import           Development.IDE.Import.DependencyInformation (transitiveReverseDependencies)
+import           GHC.Tc.Errors.Types                          (TcRnMessage (TcRnUnusedName),
+                                                               UnusedNameProv (UnusedNameTopDecl))
 import           Ide.Plugin.Error                             (PluginError (..),
                                                                getNormalizedFilePathE)
 import           Ide.Plugin.Export.Cursor
@@ -102,16 +108,34 @@ quickCodeActionHandlers state _plId (CodeActionParams _ _ doc range _) = do
   nfp <- getNormalizedFilePathE uri
   pm <- runActionE "Export.GetParsedModuleWithComments" state (useE GetParsedModuleWithComments nfp)
   let ps = pm_parsed_source pm
-  pure . InL . map InR $ case (isExplicit ps, locateUnderCursor (range ^. L.start) ps) of
-    (True, Just under) ->
-      [ ca
-      | Just (verb, title, edits) <-
-          [ addAction under ps
-          , removeAction under ps
-          ]
-      , let ca = mkAction (verb <> " `" <> title <> "`") & L.edit ?~ singleFileEdit uri edits
-      ]
-    _ -> []
+  case (isExplicit ps, locateUnderCursor (range ^. L.start) ps) of
+    (True, Just under) -> do
+      -- The names GHC flags as defined-but-unused. Attach the action to the
+      -- unused diagnostics as well.
+      unusedDiags <- liftIO $ unusedTopBindDiagnostics state nfp
+      pure . InL . map InR $
+        [ ca
+        | Just (verb, title, edits) <-
+            [ addAction under ps
+            , removeAction under ps
+            ]
+        , let fixes = [ d | d <- unusedDiags, locateUnderCursor (d ^. L.range . L.start) ps == Just under ]
+              ca = mkAction (verb <> " `" <> title <> "`")
+                     & L.edit ?~ singleFileEdit uri edits
+                     & L.diagnostics .~ (if null fixes then Nothing else Just fixes)
+        ]
+    _ -> pure (InL [])
+
+-- | The LSP diagnostics for names GHC reports as unused top-level definitions.
+unusedTopBindDiagnostics :: IdeState -> NormalizedFilePath -> IO [Diagnostic]
+unusedTopBindDiagnostics state nfp = do
+  diags <- atomically $ getDiagnostics state
+  pure [ fdLspDiagnostic d | d <- diags, fdFilePath d == nfp, isUnusedTopBind d ]
+  where
+    isUnusedTopBind d =
+      case d ^? fdStructuredMessageL . _SomeStructuredMessage . msgEnvelopeErrorL . _TcRnMessage of
+        Just (TcRnUnusedName _ UnusedNameTopDecl) -> True
+        _                                         -> False
 
 addAction :: UnderCursor -> ParsedSource -> Maybe (Text, Text, [TextEdit])
 addAction under ps = case under of

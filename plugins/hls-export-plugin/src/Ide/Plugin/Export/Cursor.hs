@@ -24,6 +24,7 @@ data UnderCursor
   = Decl ExportFlavor RdrName
   | Constructor RdrName RdrName
   | Header
+  deriving Eq
 
 locateUnderCursor :: Position -> ParsedSource -> Maybe UnderCursor
 locateUnderCursor pos ps = classifyHeader pos (unLoc ps) <|> classifyInDecl

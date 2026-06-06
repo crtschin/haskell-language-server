@@ -12,7 +12,9 @@ cradle:
       - AddCtor
       - AddClass
       - Implicit
+      - ExportUnusedFix
       - RemoveExport
+      - RemoveFirstMultiline
       - RemoveCtor
       - RemoveClass
       - MakeExplicitUsed

@@ -72,7 +72,8 @@ import           GHC.Parser.Annotation                     (Anchor (..),
 import           Language.Haskell.GHC.ExactPrint           (addComma,
                                                             exactPrint,
                                                             makeDeltaAst,
-                                                            setEntryDP)
+                                                            setEntryDP,
+                                                            transferEntryDP)
 
 #if MIN_VERSION_ghc(9,11,0)
 import           GHC                                       (AnnListBrackets (..),
@@ -321,16 +322,18 @@ separatorComma _ = Nothing
 removeNamedIE :: RdrName -> LExportList -> Maybe LExportList
 removeNamedIE name (L l items) = case break matches items of
   (_, []) -> Nothing
-  (pre, _ : post) ->
+  (pre, removed : post) ->
     let kept = pre ++ post
         kept' = over _last (first removeTrailingCommaAnn) kept
-        kept'' = if null pre then resetFirstEntryDP kept' else kept'
+        kept'' = if null pre then reuseHeadDP removed kept' else kept'
     in Just (L l kept'')
   where
     fs = rdrNameFS name
     matches (L _ ie) = parentNameIs fs ie
-    resetFirstEntryDP []     = []
-    resetFirstEntryDP (x:xs) = setEntryDP x (SameLine 0) : xs
+    -- The new first item inherits the removed head's entry delta and any
+    -- preceding comments.
+    reuseHeadDP _       []     = []
+    reuseHeadDP removed (x:xs) = transferEntryDP removed x : xs
 
 -- | Append every desired item whose parent is not already listed, leaving the
 -- existing items and their layout untouched.

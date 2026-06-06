@@ -4,6 +4,7 @@ import           Control.Lens               ((^.))
 import           Data.Either                (rights)
 import           Data.Foldable              (find)
 import           Data.List                  (sort, tails)
+import           Data.Maybe                 (fromMaybe)
 import qualified Data.Text                  as T
 import           Development.IDE.Test       (referenceReady)
 import           Ide.Plugin.Export          (descriptor)
@@ -322,6 +323,18 @@ main = defaultTestRunner $ testGroup "Export"
             noExportOffered doc (rangeAt 9 18)  -- on `recField`
         ]
 
+    , testGroup "Export fixes the unused-binding warning"
+        [ testCase "Export action attaches the -Wunused-top-binds diagnostic" $ runExport $ \_dir -> do
+            doc <- openDoc "ExportUnusedFix.hs" "haskell"
+            waitForKickDone
+            actions <- rights . map toEither <$> getCodeActions doc (rangeAt 6 0)  -- on `unused`
+            case filter ((== "Export `unused`") . (^. L.title)) actions of
+                (ca:_) -> liftIO $ not (null (fromMaybe [] (ca ^. L.diagnostics)))
+                            @? "Export action should carry the unused-binding diagnostic"
+                []     -> liftIO $ assertFailure $
+                            "Export `unused` not offered; saw: " <> show (map (^. L.title) actions)
+        ]
+
     , testGroup "Remove: value bindings"
         [ testCase "remove first value (foo)" $ runExport $ \_dir -> do
             doc <- openDoc "RemoveExport.hs" "haskell"
@@ -333,6 +346,12 @@ main = defaultTestRunner $ testGroup "Export"
             doc <- openDoc "AddExport.hs" "haskell"
             waitForKickDone
             noRemoveOffered doc (rangeAt 6 0)  -- `bar` not exported
+
+        , testCase "remove first item of a multi-line list keeps own-line layout" $ runExport $ \_dir -> do
+            doc <- openDoc "RemoveFirstMultiline.hs" "haskell"
+            waitForKickDone
+            executeRemoveAction doc (rangeAt 6 0)  -- on `foo`, the first export
+            containsAfter doc ["( bar\n  , baz\n  ) where"]
         ]
 
     , testGroup "Remove: type declarations"

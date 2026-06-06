@@ -10,6 +10,7 @@ module Ide.Plugin.Export.Exports
   , isReferencedExternally
   ) where
 
+import           Control.Monad.Extra          (anyM)
 import           Data.Maybe                   (isJust)
 import           Development.IDE.GHC.Compat
 import           Development.IDE.GHC.Error    (srcSpanToRange)
@@ -76,12 +77,8 @@ removeConstructorExport parent ctor ps = replaceExportList ps (removeCtorUnderPa
 
 -- | Keep an export if any name it brings into scope is referenced. External code may use only a @T(..)@ child, never @T@ itself.
 isReferencedExternally :: WithHieDb -> [FilePath] -> AvailInfo -> IO Bool
-isReferencedExternally withDb exclude avail = anyReferenced (availNames avail)
+isReferencedExternally withDb exclude avail = anyM referenced (availNames avail)
   where
-    anyReferenced = foldr orReferenced (pure False)
-    orReferenced n rest = do
-      found <- referenced n
-      if found then pure True else rest
     referenced n = case nameModule_maybe n of
       Nothing  -> pure False
       Just mod -> do
