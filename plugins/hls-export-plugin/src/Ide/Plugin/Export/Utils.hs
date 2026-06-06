@@ -2,10 +2,12 @@
 {-# LANGUAGE RecordWildCards #-}
 module Ide.Plugin.Export.Utils where
 
+import           Data.Aeson
 import qualified Data.Map.Strict                 as Map
 import           Data.Text                       (Text)
 import           Development.IDE.GHC.Compat
 import           Development.IDE.GHC.Compat.Util
+import           GHC.Generics
 import           Language.LSP.Protocol.Types
 
 rdrNameFS :: RdrName -> FastString
@@ -73,3 +75,12 @@ mkAction title = CodeAction {..}
     _edit = Nothing
     _command = Nothing
     _data_ = Nothing
+
+-- | Which export list a resolve request should build.
+data ExportMode
+  = ExportEverything
+  -- ^ Every symbol the module exports.
+  deriving Generic
+
+instance ToJSON ExportMode
+instance FromJSON ExportMode

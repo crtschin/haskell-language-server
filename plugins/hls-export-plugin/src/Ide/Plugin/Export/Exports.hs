@@ -1,6 +1,7 @@
 module Ide.Plugin.Export.Exports
   ( isExplicit
   , isExported
+  , setExportListExpanding
   , addExport
   , addConstructorExport
   , removeExport
@@ -29,6 +30,27 @@ isExported n ps = case hsmodExports (unLoc ps) of
   where
     nFS = rdrNameFS n
     covers ie = parentNameIs nFS ie || isInIE nFS ie
+
+addExportList :: ParsedSource -> [LIE GhcPs] -> Maybe [TextEdit]
+addExportList ps items = do
+  lmodName <- hsmodName (unLoc ps)
+  Range _ end <- srcSpanToRange (getLoc lmodName)
+  let listText = printExportList (mkExportList items)
+  Just [TextEdit (Range end end) (" " <> listText)]
+
+-- | Additive: an existing list keeps every entry and only gains the missing
+-- items, so a partial list is expanded in place.
+setExportListExpanding :: ParsedSource -> [LIE GhcPs] -> Maybe [TextEdit]
+setExportListExpanding = setExportListWith expandExportList
+
+-- | Replace the export list with @merge items@ applied to the current one,
+-- adding a fresh list after the module name when there is none yet.
+setExportListWith :: ([LIE GhcPs] -> LExportList -> LExportList) -> ParsedSource -> [LIE GhcPs] -> Maybe [TextEdit]
+setExportListWith merge ps items = case hsmodExports (unLoc ps) of
+  Nothing      -> addExportList ps items
+  Just exports -> do
+    r <- srcSpanToRange (getLoc exports)
+    Just [TextEdit r (printExportList (merge items (makeDeltaAst exports)))]
 
 -- | Extract the export list and pick an edit strategy: splice surgically when
 -- the span holds a CPP directive, otherwise reprint the whole transformed list.

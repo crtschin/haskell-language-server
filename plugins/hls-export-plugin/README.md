@@ -4,6 +4,7 @@ The export plugin provides code actions for working with a module's export list.
 
 - Export `...`: on top-level declaration symbols.
 - Unexport `...`: on exported top-level declaration symbols.
+- Export all symbols: for exporting all symbols.
 
 Actions are only offered when the module has an explicit export list.
 

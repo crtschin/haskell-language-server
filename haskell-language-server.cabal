@@ -1807,6 +1807,7 @@ library hls-export-plugin
   hs-source-dirs:     plugins/hls-export-plugin/src
   default-language:   GHC2021
   build-depends:
+    , aeson
     , containers
     , ghc
     , ghc-boot-th
@@ -1816,6 +1817,7 @@ library hls-export-plugin
     , hls-plugin-api  == 2.14.0.0
     , lens
     , lsp >=2.8
+    , mtl
     , stm
     , text
     , text-rope

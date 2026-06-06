@@ -2,6 +2,7 @@ module Ide.Plugin.Export.Cursor
   ( ExportFlavor (..)
   , UnderCursor (..)
   , locateUnderCursor
+  , moduleExports
   ) where
 
 import           Control.Applicative        ((<|>))
@@ -75,6 +76,11 @@ classifyDecl pos decl =
       TyClD _ DataDecl {tcdLName = lname, tcdDataDefn = HsDataDefn {dd_cons = cons}}
         -> Constructor (unLoc lname) <$> constructorUnderCursor pos cons
       _ -> Nothing
+
+-- | Every top-level entity the module defines, for the "export all" action.
+moduleExports :: ParsedSource -> [(ExportFlavor, RdrName)]
+moduleExports ps =
+  [(flavor, unLoc n) | decl <- hsmodDecls (unLoc ps), (flavor, n) <- declEntities (unLoc decl)]
 
 constructorUnderCursor :: Position -> DataDefnCons (LConDecl GhcPs) -> Maybe RdrName
 constructorUnderCursor pos cons =

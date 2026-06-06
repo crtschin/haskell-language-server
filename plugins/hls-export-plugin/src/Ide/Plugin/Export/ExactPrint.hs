@@ -6,8 +6,10 @@
 module Ide.Plugin.Export.ExactPrint
   ( LExportList
   , mkExportIE
+  , mkExportList
   , appendIE
   , removeNamedIE
+  , expandExportList
   , addCtorUnderParent
   , removeCtorUnderParent
   , printExportList
@@ -17,30 +19,52 @@ module Ide.Plugin.Export.ExactPrint
 
 import           Control.Lens                              (_last, over)
 import           Data.Bifunctor                            (first)
+#if MIN_VERSION_ghc(9,10,0)
 import           Data.List                                 (mapAccumL)
+#else
+import           Data.List                                 (foldl', mapAccumL)
+#endif
 import           Data.List.NonEmpty                        (NonEmpty (..))
 import           Data.Text                                 (Text)
 import qualified Data.Text                                 as T
 import           Development.IDE.GHC.Compat
 import           Development.IDE.GHC.Orphans               ()
 #if MIN_VERSION_ghc(9,11,0)
-import           GHC                                       (DeltaPos (..),
-                                                            TrailingAnn (..))
+import           GHC                                       (AnnList (..),
+                                                            DeltaPos (..),
+                                                            EpAnn (..),
+                                                            EpaLocation,
+                                                            EpaLocation' (..),
+                                                            TrailingAnn (..),
+                                                            emptyComments)
 #elif MIN_VERSION_ghc(9,9,0)
-import           GHC                                       (DeltaPos (..),
+import           GHC                                       (AnnList (..),
+                                                            DeltaPos (..),
+                                                            EpAnn (..),
+                                                            EpaLocation,
+                                                            EpaLocation' (..),
                                                             LocatedL,
                                                             NoAnn (..),
                                                             TrailingAnn (..),
+                                                            emptyComments,
                                                             noAnn)
 #else
-import           GHC                                       (DeltaPos (..),
+import           GHC                                       (AnnList (..),
+                                                            DeltaPos (..),
+                                                            EpAnn (..),
                                                             LocatedL,
+                                                            SrcSpanAnn' (..),
                                                             TrailingAnn (..),
                                                             addAnns,
                                                             emptyComments,
                                                             noAnn)
 #endif
 
+#if !MIN_VERSION_ghc(9,9,0)
+import           GHC.Parser.Annotation                     (Anchor (..),
+                                                            AnchorOperation (..),
+                                                            placeholderRealSpan)
+#endif
 import           Language.Haskell.GHC.ExactPrint           (addComma,
                                                             exactPrint,
                                                             setEntryDP,
@@ -50,8 +74,10 @@ import           Language.Haskell.GHC.ExactPrint           (runTransform)
 #endif
 
 #if MIN_VERSION_ghc(9,11,0)
-import           GHC                                       (EpToken (..),
+import           GHC                                       (AnnListBrackets (..),
+                                                            EpToken (..),
                                                             LocatedLI)
+import           GHC.Types.SrcLoc                          (UnhelpfulSpanReason (..))
 #else
 import           GHC                                       (AddEpAnn (..))
 #endif
@@ -180,6 +206,42 @@ mkTypeWithIE parent ctors =
     children = mkIEName c : map (first addComma . mkIEName) cs
     c :| cs = ctors
 
+-- | Build a fresh located @(item1, item2, ...)@ from a list of items.
+mkExportList :: [LIE GhcPs] -> LExportList
+mkExportList items =
+#if MIN_VERSION_ghc(9,9,0)
+  L (EpAnn (entryAnchor (SameLine 1)) listAnn emptyComments) (commaList items)
+#else
+  L (SrcSpanAnn (EpAnn (Anchor placeholderRealSpan (MovedAnchor (SameLine 1))) listAnn emptyComments) noSrcSpan) (commaList items)
+#endif
+  where
+#if MIN_VERSION_ghc(9,11,0)
+    listAnn :: AnnList (EpToken "hiding", [EpToken ","])
+    listAnn = AnnList
+      { al_anchor = Nothing
+      , al_brackets = ListParens (EpTok (epl 0)) (EpTok (epl 0))
+      , al_semis = []
+      , al_rest = (NoEpTok, [])
+      , al_trailing = []
+      }
+#else
+    listAnn :: AnnList
+    listAnn = AnnList
+      { al_anchor = Nothing
+      , al_open = Just (AddEpAnn AnnOpenP (epl 0))
+      , al_close = Just (AddEpAnn AnnCloseP (epl 0))
+      , al_rest = []
+      , al_trailing = []
+      }
+#endif
+
+    commaList = go True
+      where
+        go _       []     = []
+        go isFirst [x]    = [setEntryDP (first removeTrailingCommaAnn x) (dp isFirst)]
+        go isFirst (x:xs) = setEntryDP (first ensureTrailingComma x) (dp isFirst) : go False xs
+        dp isFirst = SameLine (if isFirst then 0 else 1)
+
 -- | Map over an @IEThingWith@'s listed constructors, a no-op for any other item.
 overThingWithChildren :: ([LIEWrappedName GhcPs] -> [LIEWrappedName GhcPs]) -> IE GhcPs -> IE GhcPs
 #if MIN_VERSION_ghc(9,9,0)
@@ -257,6 +319,14 @@ removeNamedIE name (L l items) = case break matches items of
     -- preceding comments.
     reuseHeadDP _       []     = []
     reuseHeadDP removed (x:xs) = transferItemDP removed x : xs
+
+-- | Append every desired item whose parent is not already listed, leaving the
+-- existing items and their layout untouched.
+expandExportList :: [LIE GhcPs] -> LExportList -> LExportList
+expandExportList desired lst@(L _ items0) = foldl' (flip appendIE) lst additions
+  where
+    existingFSs = [rdrNameFS p | L _ ie <- items0, Just p <- [ieParentName ie]]
+    additions   = [item | item@(L _ ie) <- desired, Just p <- [ieParentName ie], rdrNameFS p `notElem` existingFSs]
 
 -- | 'Nothing' iff @ctor@ is already exported (via @T(..)@ or @T(...,ctor,...)@).
 addCtorUnderParent ::
@@ -339,6 +409,15 @@ freshCtorEntry :: RdrName -> RdrName -> [LIE GhcPs] -> Maybe Text
 freshCtorEntry parent ctor items = case ctorExportEdit parent ctor items of
   AlreadyExported -> Nothing
   _               -> Just (printIE (mkTypeWithIE parent (ctor :| [])))
+
+#if MIN_VERSION_ghc(9,9,0)
+entryAnchor :: DeltaPos -> EpaLocation
+#if MIN_VERSION_ghc(9,11,0)
+entryAnchor dp = EpaDelta (UnhelpfulSpan UnhelpfulNoLocationInfo) dp []
+#else
+entryAnchor dp = EpaDelta dp []
+#endif
+#endif
 
 -- | How to add @ctor@ to an export list so its parent type @T@ exports it.
 data CtorEdit

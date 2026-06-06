@@ -5,7 +5,9 @@ module Ide.Plugin.Export (descriptor) where
 import           Control.Applicative              ((<|>))
 import           Control.Concurrent.STM           (atomically)
 import           Control.Lens
+import           Control.Monad.Error.Class        (throwError)
 import           Control.Monad.IO.Class           (liftIO)
+import           Data.Aeson                       (toJSON)
 import           Data.Maybe                       (isJust, isNothing)
 import           Data.Text                        (Text)
 import qualified Data.Text                        as T
@@ -17,11 +19,13 @@ import           Development.IDE.GHC.Compat
 import           Development.IDE.GHC.Compat.Error (_TcRnUnusedTopBind,
                                                    msgEnvelopeErrorL)
 import qualified GHC.LanguageExtensions.Type      as LangExt (Extension (..))
-import           Ide.Plugin.Error                 (getNormalizedFilePathE)
+import           Ide.Plugin.Error                 (PluginError (..),
+                                                   getNormalizedFilePathE)
 import           Ide.Plugin.Export.Cursor
 import           Ide.Plugin.Export.ExactPrint
 import           Ide.Plugin.Export.Exports
 import           Ide.Plugin.Export.Utils
+import           Ide.Plugin.Resolve               (mkCodeActionWithResolveAndCommand)
 import           Ide.Types
 import qualified Ide.Types                        as Ide
 import qualified Language.LSP.Protocol.Lens       as L
@@ -30,10 +34,42 @@ import           Language.LSP.Protocol.Types
 
 descriptor :: PluginId -> PluginDescriptor IdeState
 descriptor plId =
-  let exportHandlers = mkPluginHandler SMethod_TextDocumentCodeAction quickCodeActionHandlers
+  let (explicitExportCommand, explicitExportHandler) = mkCodeActionWithResolveAndCommand mempty plId explicitExportCodeActionProvider explicitExportCodeActionResolveProvider
+      exportHandlers = mkPluginHandler SMethod_TextDocumentCodeAction quickCodeActionHandlers
   in (defaultPluginDescriptor plId "Code actions for module export lists")
-    { Ide.pluginHandlers = exportHandlers
+    { Ide.pluginHandlers = explicitExportHandler <> exportHandlers
+    , Ide.pluginCommands = explicitExportCommand
     }
+
+explicitExportCodeActionProvider :: PluginMethodHandler IdeState 'Method_TextDocumentCodeAction
+explicitExportCodeActionProvider state _pId (CodeActionParams _ _ doc range _) = do
+  nfp <- getNormalizedFilePathE (doc ^. L.uri)
+  offered <-
+    runActionE "Export.GetParsedModuleWithComments" state $ do
+      pm <- useE GetParsedModuleWithComments nfp
+      let ps = pm_parsed_source pm
+      case locateUnderCursor (range ^. L.start) ps of
+        Just Header -> do
+          let hasUnexported = not (all (flip isExported ps . snd) (moduleExports ps))
+          pure [ (ExportEverything, "Export all symbols") | hasUnexported ]
+        _ -> pure []
+  pure . InL . map InR $
+    [ mkAction title & L.data_ ?~ toJSON mode | (mode, title) <- offered ]
+
+explicitExportCodeActionResolveProvider :: ResolveFunction IdeState ExportMode 'Method_CodeActionResolve
+explicitExportCodeActionResolveProvider state _pId ca uri mode = do
+  nfp <- getNormalizedFilePathE uri
+  medits <- case mode of
+    ExportEverything ->
+      runActionE "Export.ResolveAll" state $ do
+        pm <- useE GetParsedModuleWithComments nfp
+        let ps = pm_parsed_source pm
+        pure $ setExportListExpanding ps (map (uncurry mkExportIE) (moduleExports ps))
+  case medits of
+    Just edits ->
+      pure $ ca & L.edit ?~ singleFileEdit uri edits
+    Nothing ->
+      throwError $ PluginInternalError "Export.Resolve: cannot locate module name span"
 
 quickCodeActionHandlers :: PluginMethodHandler IdeState Method_TextDocumentCodeAction
 quickCodeActionHandlers state _plId (CodeActionParams _ _ doc range _) = do
