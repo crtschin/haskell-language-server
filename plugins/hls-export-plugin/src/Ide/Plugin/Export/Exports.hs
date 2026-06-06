@@ -3,6 +3,8 @@ module Ide.Plugin.Export.Exports
   , isExported
   , addExport
   , addConstructorExport
+  , removeExport
+  , removeConstructorExport
   ) where
 
 import           Data.Maybe                         (isJust)
@@ -64,3 +66,13 @@ insertAfterOpen (Range (Position sl sc) _) itemTxt =
   where
     -- `sc` is the column of `(`, so insert just past it.
     pos = Position sl (sc + 1)
+
+-- | Removal reprints the transformed list, so decline when the span holds CPP:
+-- reprinting would drop the directives the parser stripped.
+removeExport :: Maybe Rope -> ParsedSource -> RdrName -> Maybe [TextEdit]
+removeExport msrc ps name =
+  withExportList msrc ps (removeNamedIE name) $ \_ _ -> Nothing
+
+removeConstructorExport :: Maybe Rope -> RdrName -> RdrName -> ParsedSource -> Maybe [TextEdit]
+removeConstructorExport msrc parent ctor ps =
+  withExportList msrc ps (removeCtorUnderParent parent ctor) $ \_ _ -> Nothing

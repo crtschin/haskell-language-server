@@ -7,7 +7,9 @@ module Ide.Plugin.Export.ExactPrint
   ( LExportList
   , mkExportIE
   , appendIE
+  , removeNamedIE
   , addCtorUnderParent
+  , removeCtorUnderParent
   , printExportList
   , printIE
   , freshCtorEntry
@@ -15,6 +17,7 @@ module Ide.Plugin.Export.ExactPrint
 
 import           Control.Lens                              (_last, over)
 import           Data.Bifunctor                            (first)
+import           Data.List                                 (mapAccumL)
 import           Data.List.NonEmpty                        (NonEmpty (..))
 import           Data.Text                                 (Text)
 import qualified Data.Text                                 as T
@@ -40,7 +43,11 @@ import           GHC                                       (DeltaPos (..),
 
 import           Language.Haskell.GHC.ExactPrint           (addComma,
                                                             exactPrint,
-                                                            setEntryDP)
+                                                            setEntryDP,
+                                                            transferEntryDP)
+#if !MIN_VERSION_ghc(9,9,0)
+import           Language.Haskell.GHC.ExactPrint           (runTransform)
+#endif
 
 #if MIN_VERSION_ghc(9,11,0)
 import           GHC                                       (EpToken (..),
@@ -90,6 +97,10 @@ ieVar w =
 #if MIN_VERSION_ghc(9,9,0)
     Nothing
 #endif
+
+-- | Bare @T@ (no constructors listed).
+mkTypeAbsIE :: RdrName -> LIE GhcPs
+mkTypeAbsIE = mkTypeAbsIE' . mkIEName
 
 mkTypeAbsIE' :: LIEWrappedName GhcPs -> LIE GhcPs
 mkTypeAbsIE' w =
@@ -222,6 +233,31 @@ separatorComma :: [LIE GhcPs] -> Maybe TrailingAnn
 separatorComma items =
   listToMaybe [c | L ann _ <- items, c <- trailingAnns ann, isCommaAnn c]
 
+-- | Pure 'transferEntryDP'. ghc-exactprint exposes it purely from 9.9 on;
+-- earlier it lives in 'TransformT', so run the transform to recover the result.
+transferItemDP :: LIE GhcPs -> LIE GhcPs -> LIE GhcPs
+#if MIN_VERSION_ghc(9,9,0)
+transferItemDP = transferEntryDP
+#else
+transferItemDP a b = let (r, _, _) = runTransform (transferEntryDP a b) in r
+#endif
+
+removeNamedIE :: RdrName -> LExportList -> Maybe LExportList
+removeNamedIE name (L l items) = case break matches items of
+  (_, []) -> Nothing
+  (pre, removed : post) ->
+    let kept = pre ++ post
+        kept' = over _last (first removeTrailingCommaAnn) kept
+        kept'' = if null pre then reuseHeadDP removed kept' else kept'
+    in Just (L l kept'')
+  where
+    fs = rdrNameFS name
+    matches (L _ ie) = parentNameIs fs ie
+    -- The new first item inherits the removed head's entry delta and any
+    -- preceding comments.
+    reuseHeadDP _       []     = []
+    reuseHeadDP removed (x:xs) = transferItemDP removed x : xs
+
 -- | 'Nothing' iff @ctor@ is already exported (via @T(..)@ or @T(...,ctor,...)@).
 addCtorUnderParent ::
   -- | parent
@@ -249,6 +285,42 @@ addCtorChildren ctor = overThingWithChildren $ \cs ->
   let hasSibling = not (null cs)
       newChild = setEntryDP (mkIEName ctor) (SameLine (if hasSibling then 1 else 0))
    in (if hasSibling then map (first ensureTrailingComma) cs else cs) ++ [newChild]
+
+-- | Removing the last child downgrades the parent from @T(ctor)@ to @T@.
+removeCtorUnderParent ::
+  RdrName {- ^ parent -} ->
+  RdrName {- ^ ctor -} ->
+  LExportList ->
+  Maybe LExportList
+removeCtorUnderParent parent ctor (L l items) =
+  if changed then Just (L l newItems) else Nothing
+  where
+    (changed, newItems) = mapAccumL step False items
+    parentFS = rdrNameFS parent
+    ctorFS = rdrNameFS ctor
+
+    step acc lie@(L itemLoc ie)
+      | parentNameIs parentFS ie
+      , Just cs <- ieThingWithChildren ie
+      , any ((== ctorFS) . lieWrappedNameFS) cs =
+          let cs' = filter ((/= ctorFS) . lieWrappedNameFS) cs
+              ie' = case cs' of
+                      [] -> downgradeToAbs ie
+                      _  -> overThingWithChildren (const (normaliseChildren cs')) ie
+          in (True, L itemLoc ie')
+      | otherwise = (acc, lie)
+
+    downgradeToAbs :: IE GhcPs -> IE GhcPs
+    downgradeToAbs ie
+      | Just _ <- ieThingWithChildren ie = unLoc (mkTypeAbsIE parent)
+      | otherwise                        = ie
+
+    normaliseChildren :: [LIEWrappedName GhcPs] -> [LIEWrappedName GhcPs]
+    normaliseChildren newCs =
+      let normalised = case newCs of
+            []     -> []
+            (c:cs) -> setEntryDP c (SameLine 0) : map (first ensureTrailingComma) cs
+      in over _last (first removeTrailingCommaAnn) normalised
 
 printExportList :: LExportList -> Text
 printExportList l = T.pack (exactPrint (setEntryDP l (SameLine 0)))
