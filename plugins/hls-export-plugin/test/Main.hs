@@ -3,6 +3,7 @@ module Main (main) where
 import           Control.Lens               ((^.))
 import           Data.Char                  (isSpace)
 import           Data.Either                (rights)
+import           Data.Foldable              (find)
 import           Data.List                  (sort)
 import           Data.Maybe                 (fromMaybe)
 import qualified Data.Text                  as T
@@ -37,6 +38,22 @@ runExportWith extra hsFile act =
             waitForKickDone
             act doc
 
+testDataDirExposed :: FilePath
+testDataDirExposed = "plugins" </> "hls-export-plugin" </> "test" </> "testdata-exposed"
+
+runExportResolveExposed :: (FilePath -> Session a) -> IO a
+runExportResolveExposed act =
+    runSessionWithTestConfig def
+        { testDirLocation = Left testDataDirExposed
+        , testPluginDescriptor = plugin
+        , testConfigCaps = codeActionResolveCaps
+        } act
+
+codeActionTitles :: TextDocumentIdentifier -> Range -> Session [T.Text]
+codeActionTitles doc range =
+    sort . map (^. L.title) . rights . map toEither
+        <$> getCodeActions doc range
+
 executeByPrefix :: T.Text -> TextDocumentIdentifier -> Range -> Session ()
 executeByPrefix prefix doc range = do
     actions <- rights . map toEither <$> getCodeActions doc range
@@ -50,7 +67,7 @@ executeRemoveAction = executeByPrefix "Unexport `"
 
 noActionWithPrefix :: T.Text -> TextDocumentIdentifier -> Range -> Session ()
 noActionWithPrefix prefix doc range = do
-    titles <- sort . map (^. L.title) . rights . map toEither <$> getCodeActions doc range
+    titles <- codeActionTitles doc range
     liftIO $ not (any (prefix `T.isPrefixOf`) titles)
         @? ("Did not expect " <> T.unpack prefix <> " action; saw: " <> show titles)
 
@@ -63,6 +80,23 @@ assertAnyInfix :: T.Text -> [T.Text] -> Assertion
 assertAnyInfix hay variants =
     any (`T.isInfixOf` hay) variants
         @? ("Expected one of " <> show variants <> " in:\n" <> T.unpack hay)
+
+-- | Fail if any needle is an infix of the text.
+assertNoneInfix :: T.Text -> [T.Text] -> Assertion
+assertNoneInfix hay needles =
+    not (any (`T.isInfixOf` hay) needles)
+        @? ("Expected none of " <> show needles <> " in:\n" <> T.unpack hay)
+
+-- | Assert a code action with this exact title is (or is not) offered.
+assertOffered, assertNotOffered :: T.Text -> TextDocumentIdentifier -> Range -> Session ()
+assertOffered    = titleOffered True
+assertNotOffered = titleOffered False
+
+titleOffered :: Bool -> T.Text -> TextDocumentIdentifier -> Range -> Session ()
+titleOffered want title doc range = do
+    titles <- codeActionTitles doc range
+    liftIO $ (title `elem` titles) == want
+        @? (T.unpack title <> ": expected offered=" <> show want <> ", saw: " <> show titles)
 
 containsAfter :: TextDocumentIdentifier -> [T.Text] -> Session ()
 containsAfter doc expected = documentContents doc >>= liftIO . (`assertAnyInfix` expected)
@@ -405,4 +439,68 @@ main = defaultTestRunner $ testGroup "Export"
         , testCase "no remove action when cursor on RHS" $ runExport "RemoveExport.hs" $ \doc ->
             noRemoveOffered doc (rangeAt 3 6)  -- on the `1` of `foo = 1`
         ]
+
+    , testGroup "Export all symbols"
+        [ testCase "implicit module: lists every top-level symbol with its flavor" $ runExportResolveExposed $ \_dir -> do
+            target <- openDoc "ExportAll.hs" "haskell"
+            waitForKickDone
+            header <- exportHeaderAfter "Export all symbols" target
+            liftIO $ do
+                assertAnyInfix  header ["value"]
+                assertAnyInfix  header ["Rec (..)", "Rec(..)"]
+                assertAnyInfix  header ["NT (..)", "NT(..)"]
+                assertAnyInfix  header ["Cls (..)", "Cls(..)"]
+                assertAnyInfix  header ["Syn"]
+                -- record fields and class methods fold into (..), never listed standalone
+                assertNoneInfix header [",)", "field", "method"]
+
+        , testCase "partial explicit list: appends the missing symbols, keeps existing entries and re-exports" $ runExportResolveExposed $ \_dir -> do
+            target <- openDoc "ExpandExports.hs" "haskell"
+            waitForKickDone
+            header <- exportHeaderAfter "Export all symbols" target
+            liftIO $ do
+                assertAnyInfix  header ["alreadyListed"]            -- pre-existing local entry kept
+                assertAnyInfix  header ["notYetListed"]             -- missing local appended
+                assertAnyInfix  header ["Extra (..)", "Extra(..)"]
+                assertAnyInfix  header ["sort"]                     -- re-export of an import survives
+                assertNoneInfix header [",)"]
+                T.count "sort" header == 1
+                    @? ("Re-export should not be duplicated:\n" <> T.unpack header)
+
+        , testCase "offered regardless of whether the module is exposed" $ runExportResolveExposed $ \_dir -> do
+            -- Listing all exports is non-destructive, so unlike the trim action it
+            -- is not withheld on a library-exposed module.
+            target <- openDoc "ExposedApi.hs" "haskell"
+            waitForKickDone
+            assertOffered "Export all symbols" target (rangeAt 0 7)
+
+        , testCase "not offered when every symbol is already exported" $ runExportResolveExposed $ \_dir -> do
+            target <- openDoc "Complete.hs" "haskell"
+            waitForKickDone
+            assertNotOffered "Export all symbols" target (rangeAt 0 7)
+
+        , testCase "not offered off the module header" $ runExportResolveExposed $ \_dir -> do
+            target <- openDoc "ExportAll.hs" "haskell"
+            waitForKickDone
+            assertNotOffered "Export all symbols" target (rangeAt 2 0)  -- on `value`
+        ]
     ]
+
+runActionWithTitle :: T.Text -> TextDocumentIdentifier -> Range -> Session ()
+runActionWithTitle title doc range = do
+    actions <- rights . map toEither <$> getCodeActions doc range
+    case find ((== title) . (^. L.title)) actions of
+        Just ca -> do
+            resolved <- resolveCodeAction ca
+            executeCodeAction resolved
+        Nothing -> liftIO $ assertFailure $
+            T.unpack title <> " action not offered, saw: " <> show (map (^. L.title) actions)
+
+exportHeader :: T.Text -> T.Text
+exportHeader = T.takeWhile (/= '\n')
+
+-- | Run the titled action on the module header and return the rewritten header line.
+exportHeaderAfter :: T.Text -> TextDocumentIdentifier -> Session T.Text
+exportHeaderAfter title doc = do
+    runActionWithTitle title doc (rangeAt 0 7)
+    exportHeader <$> documentContents doc
