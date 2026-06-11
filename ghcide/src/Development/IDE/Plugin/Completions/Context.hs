@@ -7,6 +7,7 @@
 -- completions to offer.
 module Development.IDE.Plugin.Completions.Context
   ( Context (..)
+  , ContextGroup (..)
   , contextFilter
   , deduceContext
   , getContext
@@ -14,7 +15,8 @@ module Development.IDE.Plugin.Completions.Context
 
 import           Data.Generics                        (GenericQ, extQ, gmapQ,
                                                        mkQ)
-import           Data.Maybe                           (maybeToList)
+import           Data.Maybe                           (isNothing, mapMaybe,
+                                                       maybeToList)
 import qualified Data.Text                            as T
 import           Development.IDE
 import           Development.IDE.Core.PositionMapping
@@ -40,9 +42,20 @@ data Context
     ImportListContext T.Text
   | -- | The export list of the current module.
     ExportContext
+  | -- | A top-level gap between declarations, or a bare top-level splice.
+    TopContext [ContextGroup]
+  | -- | A binder being typed, no symbol to complete.
+    BinderContext
   | -- | Fallback. Show all known symbols.
     DefaultContext
   deriving (Show, Eq)
+
+-- | Which kinds of top-level snippet are valid at a 'TopContext' position.
+data ContextGroup
+  = HeaderGroup
+  | ImportGroup
+  | DeclarationGroup
+  deriving (Show, Eq, Ord)
 
 data ContextResult = NoContext | ContextResult !Range !Context
 
@@ -58,15 +71,17 @@ foldTighten :: (a -> ContextResult) -> [a] -> ContextResult
 foldTighten f = foldr (tighten . f) NoContext
 
 -- | Filter completions for a context. The predicate reports whether a candidate
--- is a type-level name. An export list accepts both, so it is unfiltered. Import
--- contexts are dispatched by getCompletions before this runs and never reach
--- here.
+-- is a type-level name.
+--
+-- NB: Import and binder contexts are dispatched before this point.
 contextFilter :: (a -> Bool) -> Context -> [a] -> [a]
 contextFilter isTypeCompl ctx = case ctx of
   TypeContext           -> filter isTypeCompl
   ValueContext          -> filter (not . isTypeCompl)
   DefaultContext        -> id
   ExportContext         -> id
+  TopContext{}          -> id
+  BinderContext         -> dispatchedEarlier
   ImportModuleContext{} -> dispatchedEarlier
   ImportListContext{}   -> dispatchedEarlier
   where
@@ -80,20 +95,36 @@ deduceContext (Just (pm, pmapping)) pos =
   let PositionMapping pDelta = pmapping
   in getContext pm (fromDelta pDelta pos)
 
--- | Determine the completion 'Context' at the cursor, returning the innermost
--- (most specific) declaration that contains it, or 'DefaultContext' if none do.
+-- | Determine the completion 'Context' at the cursor: the innermost declaration
+-- containing it, otherwise a 'TopContext'.
 getContext :: ParsedModule -> PositionResult Position -> Context
 getContext pm query =
   case foldTighten (getExportContext q) (maybeToList hsmodExports)
        `tighten` foldTighten (getImportContext q) hsmodImports
        `tighten` foldTighten (getDeclContext q) hsmodDecls of
-    NoContext             -> DefaultContext
+    NoContext             -> TopContext topGroups
     ContextResult _ found -> found
   where
     q = case query of
       PositionExact p   -> Range p p
       PositionRange l u -> Range l u
-    HsModule {hsmodExports, hsmodImports, hsmodDecls} = unLoc (pm_parsed_source pm)
+    HsModule {hsmodName, hsmodExports, hsmodImports, hsmodDecls} =
+      unLoc (pm_parsed_source pm)
+
+    -- Snippet groups valid here. The line being typed does not count as "above".
+    topGroups = concat
+      [ [HeaderGroup | isNothing hsmodName, not belowDecl, not belowImport]
+      , [ImportGroup | not belowDecl]
+      , [DeclarationGroup | not aboveImport]
+      ]
+    cursorLine   = _line (_start q)
+    declRanges   = mapMaybe rangeOf hsmodDecls
+    importRanges = mapMaybe rangeOf hsmodImports
+    belowDecl    = any ((< cursorLine) . endLine) declRanges
+    belowImport  = any ((< cursorLine) . endLine) importRanges
+    aboveImport  = any ((> cursorLine) . startLine) importRanges
+    endLine      = _line . _end
+    startLine    = _line . _start
 
 getExportContext :: Range -> XRec GhcPs [LIE GhcPs] -> ContextResult
 getExportContext = contextual ExportContext
@@ -124,9 +155,11 @@ typeSig _             = False
 declQ :: Range -> LHsDecl GhcPs -> (ContextResult, Bool)
 declQ query decl'@(L _ decl) =
   contInRange query (rangeOf decl') $ \declRange -> case decl of
-    SigD _ sig | typeSig sig -> (ContextResult declRange TypeContext, True)
-    ValD {}                  -> (ContextResult declRange ValueContext, False)
-    _                        -> (NoContext, False)
+    SigD _ sig | typeSig sig             -> (ContextResult declRange TypeContext, True)
+    ValD {}                              -> (ContextResult declRange ValueContext, False)
+    TyClD {}                             -> (ContextResult declRange BinderContext, False)
+    SpliceD _ (SpliceDecl _ _ DollarSplice) -> (ContextResult declRange DefaultContext, True)
+    _                                    -> (NoContext, False)
 
 -- | A signature reached by descent (local, class, or instance). Only the
 -- type-bearing ones are a type context.

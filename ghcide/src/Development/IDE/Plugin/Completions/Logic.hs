@@ -45,7 +45,9 @@ import           Development.IDE.GHC.Compat.Util
 import           Development.IDE.GHC.Error
 import           Development.IDE.GHC.Util
 import           Development.IDE.Plugin.Completions.Context (Context (..),
+                                                             ContextGroup,
                                                              contextFilter)
+import           Development.IDE.Plugin.Completions.Snippet (getContextSnippets)
 import           Development.IDE.Plugin.Completions.Types
 import           Development.IDE.Spans.LocalBindings
 import           Development.IDE.Types.Exports
@@ -488,19 +490,22 @@ getCompletions
     = []
 
     -- ------------------------------------------------------------------------
-    | otherwise =
-        -- assumes that nubOrdBy is stable
-        let uniqueFiltCompls = nubOrdBy (uniqueCompl `on` snd . Fuzzy.original) filtCompls
-            compls = (fmap.fmap.fmap) (mkCompl pId ideOpts uri) uniqueFiltCompls
-            pId = lookupCommandProvider plugins (CommandId extendImportCommandId)
-        in
-          (fmap.fmap) snd $
-          sortBy (compare `on` lexicographicOrdering) $
-          mergeListsBy (flip compare `on` score)
-            [ (fmap.fmap) (notQual,) filtModNameCompls
-            , (fmap.fmap) (notQual,) filtKeywordCompls
-            , (fmap.fmap.fmap) (toggleSnippets caps config) compls
-            ]
+    -- Primarily emit snippets, though once a prefix is typed, also merge in
+    -- the regular completions so a bare splice resolves. An empty prefix stays
+    -- snippets-only.
+    | TopContext groups <- context
+    = let snippetCompls = (fmap . fmap) (toggleSnippets caps config) (filtTopContextCompls groups)
+      in if T.null fullPrefix
+           then snippetCompls
+           else defaultComplsWith [(fmap.fmap) (notQual,) snippetCompls]
+
+    -- ------------------------------------------------------------------------
+    -- The cursor is in a binder position, there's nothing to suggest.
+    | BinderContext <- context
+    = []
+
+    -- ------------------------------------------------------------------------
+    | otherwise = defaultComplsWith []
     where
       enteredQual = if T.null prefixScope then "" else prefixScope <> "."
       fullPrefix  = enteredQual <> prefixText
@@ -618,6 +623,30 @@ getCompletions
       filtKeywordCompls
           | T.null prefixScope = filtListWith mkExtCompl (optKeywords ideOpts)
           | otherwise = []
+
+      filtTopContextCompls :: [ContextGroup] -> [Scored CompletionItem]
+      filtTopContextCompls groups
+          | T.null prefixScope
+          = Fuzzy.filter chunkSize maxC fullPrefix (getContextSnippets groups) (view L.label)
+          | otherwise = []
+
+      -- The default completions (identifiers, modules, keywords) plus any extra
+      -- already-scored sources. @defaultComplsWith []@ is the plain default list.
+      defaultComplsWith :: [[Scored (Bool, CompletionItem)]] -> [Scored CompletionItem]
+      defaultComplsWith extraSources =
+        -- assumes that nubOrdBy is stable
+        let uniqueFiltCompls = nubOrdBy (uniqueCompl `on` snd . Fuzzy.original) filtCompls
+            compls = (fmap.fmap.fmap) (mkCompl pId ideOpts uri) uniqueFiltCompls
+            pId = lookupCommandProvider plugins (CommandId extendImportCommandId)
+        in
+          (fmap.fmap) snd $
+          sortBy (compare `on` lexicographicOrdering) $
+          mergeListsBy (flip compare `on` score) $
+            extraSources ++
+            [ (fmap.fmap) (notQual,) filtModNameCompls
+            , (fmap.fmap) (notQual,) filtKeywordCompls
+            , (fmap.fmap.fmap) (toggleSnippets caps config) compls
+            ]
 
       -- We use this ordering to alphabetically sort suggestions while respecting
       -- all the previously applied ordering sources. These are:
