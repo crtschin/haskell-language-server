@@ -200,18 +200,20 @@ localCompletionTests = [
         ,("abcde", CompletionItemKind_Function, "abcde", True, False, Nothing)
         ],
     testSessionEmpty "incomplete entries" $ do
-        let src a = "data Data = " <> a
-        doc <- createDoc "A.hs" "haskell" $ src "AAA"
+        -- a value binding (not a data declaration), so the completion sits in a
+        -- value context rather than a top-level snippet position
+        let src a = a <> " = aaa"
+        doc <- createDoc "A.hs" "haskell" $ src "aaa"
         void $ waitForTypecheck doc
         let editA rhs =
                 changeDoc doc [TextDocumentContentChangeEvent . InR . TextDocumentContentChangeWholeDocument $ src rhs]
-        editA "AAAA"
+        editA "aaaa"
         void $ waitForTypecheck doc
-        editA "AAAAA"
+        editA "aaaaa"
         void $ waitForTypecheck doc
 
-        compls <- getCompletions doc (Position 0 15)
-        liftIO $ filter ("AAA" `T.isPrefixOf`) (mapMaybe _insertText compls) @?= ["AAAAA"]
+        compls <- getCompletions doc (Position 0 11)
+        liftIO $ filter ("aaa" `T.isPrefixOf`) (mapMaybe _insertText compls) @?= ["aaaaa"]
         pure (),
     completionTest
         "polymorphic record dot completion"
@@ -692,7 +694,128 @@ contextCompletionTests =
       let labels = map (^. L.label) compls
       liftIO $ assertBool "permutations should complete inside the hiding list"
                           ("permutations" `elem` labels)
+
+  , testSessionSingleFile "import snippets at top level" "A.hs"
+      (T.unlines [ "module A where", "imp" ]) $ do
+      doc <- openDoc "A.hs" "haskell"
+      _ <- waitForDiagnostics
+      compls <- getCompletions doc (Position 1 3)
+      liftIO $ length (importSnippets compls) @?= 4
+
+  , testSessionSingleFile "function snippet at top level" "A.hs"
+      (T.unlines [ "module A where", "foo = ()", "fun" ]) $ do
+      doc <- openDoc "A.hs" "haskell"
+      _ <- waitForDiagnostics
+      compls <- getCompletions doc (Position 2 3)
+      liftIO $ assertBool "function snippet offered" $ any
+        (\c -> c ^. L.label == "function"
+            && c ^. L.insertText == Just "${1:identifier} :: ${2:type}\n${1:identifier} = ${3:body}")
+        (allSnippets compls)
+
+  , testSessionSingleFile "class snippet at top level" "A.hs"
+      (T.unlines [ "module A where", "foo = ()", "cla" ]) $ do
+      doc <- openDoc "A.hs" "haskell"
+      _ <- waitForDiagnostics
+      compls <- getCompletions doc (Position 2 3)
+      liftIO $ assertBool "class snippet offered" $ any
+        (\c -> c ^. L.label == "class" && c ^. L.insertText == Just "class ${1:name} where")
+        (allSnippets compls)
+
+  , testSessionSingleFile "top level offers snippets and identifiers together" "A.hs"
+      (T.unlines [ "module A where", "import Data.List", "ins" ]) $ do
+      doc <- openDoc "A.hs" "haskell"
+      _ <- waitForDiagnostics
+      compls <- getCompletions doc (Position 2 3)
+      let labels = map (^. L.label) compls
+      liftIO $ do
+        assertBool "instance snippet still offered"
+          (not (null (snippetsWithLabel "instance" compls)))
+        assertBool "imported identifier offered alongside snippets"
+          ("insert" `elem` labels)
+
+  , testSessionSingleFile "no snippets in value binding" "A.hs"
+      (T.unlines [ "module A where", "foo = imp" ]) $ do
+      doc <- openDoc "A.hs" "haskell"
+      _ <- waitForDiagnostics
+      compls <- getCompletions doc (Position 1 9)
+      liftIO $ allSnippets compls @?= []
+
+  , testSessionSingleFile "no snippets in where-clause" "A.hs"
+      (T.unlines
+        [ "module A where"
+        , "foo x = bar"
+        , "  where"
+        , "    helper = imp"
+        ]) $ do
+      doc <- openDoc "A.hs" "haskell"
+      _ <- waitForDiagnostics
+      compls <- getCompletions doc (Position 3 15)
+      liftIO $ allSnippets compls @?= []
+
+  , testSessionSingleFile "blank top level offers snippets, not an identifier flood" "A.hs"
+      (T.unlines [ "module A where", "foo = ()", "", "x = notInScope" ]) $ do
+      doc <- openDoc "A.hs" "haskell"
+      _ <- waitForDiagnostics
+      compls <- getCompletions doc (Position 2 0)
+      liftIO $ do
+        assertBool "snippets offered on a blank top-level line" (not (null (allSnippets compls)))
+        assertBool "no identifier flood on an empty prefix"
+                   ("head" `notElem` map (^. L.label) compls)
+
+  , testSessionSingleFile "unmatched prefix at top level returns empty" "A.hs"
+      (T.unlines [ "module A where", "xyz" ]) $ do
+      doc <- openDoc "A.hs" "haskell"
+      _ <- waitForDiagnostics
+      compls <- getCompletions doc (Position 1 3)
+      liftIO $ compls @?= []
+
+  , testSessionSingleFile "module header snippet shown when no module declaration" "A.hs"
+      (T.unlines [ "mod" ]) $ do
+      doc <- openDoc "A.hs" "haskell"
+      _ <- waitForDiagnostics
+      compls <- getCompletions doc (Position 0 3)
+      liftIO $ length (snippetsWithLabel "module" compls) @?= 1
+
+  , testSessionSingleFile "module header snippet not shown when module declaration exists" "A.hs"
+      (T.unlines [ "module A where", "mod" ]) $ do
+      doc <- openDoc "A.hs" "haskell"
+      _ <- waitForDiagnostics
+      compls <- getCompletions doc (Position 1 3)
+      liftIO $ snippetsWithLabel "module" compls @?= []
+
+  , testSessionSingleFile "no completions on a data constructor name" "A.hs"
+      (T.unlines [ "module A where", "data Foo = Barr", "x = notInScope" ]) $ do
+      doc <- openDoc "A.hs" "haskell"
+      _ <- waitForDiagnostics
+      compls <- getCompletions doc (Position 1 13)
+      liftIO $ compls @?= []
+
+  , testSessionSingleFile "constructor field type still gives type completions" "A.hs"
+      (T.unlines [ "module A where", "data Foo = Barr In", "x = notInScope" ]) $ do
+      doc <- openDoc "A.hs" "haskell"
+      _ <- waitForDiagnostics
+      compls <- getCompletions doc (Position 1 18)
+      liftIO $ assertBool "Int should be offered for a constructor field type"
+                          ("Int" `elem` map (^. L.label) compls)
+
+  , testSessionSingleFile "inside a top-level splice offers identifier completions" "A.hs"
+      (T.unlines
+        [ "{-# LANGUAGE TemplateHaskell #-}"
+        , "module A where"
+        , "myBinding = ()"
+        , "$(myBinding)"
+        ]) $ do
+      doc <- openDoc "A.hs" "haskell"
+      _ <- waitForDiagnostics
+      compls <- getCompletions doc (Position 3 5)
+      liftIO $ assertBool "an in-scope binding should be offered inside a splice"
+                          ("myBinding" `elem` map (^. L.label) compls)
   ]
+  where
+    allSnippets cs =
+      [ c | c@CompletionItem{..} <- cs, _kind == Just CompletionItemKind_Snippet ]
+    snippetsWithLabel lbl cs = filter ((== lbl) . (^. L.label)) (allSnippets cs)
+    importSnippets cs = filter (("import" `T.isPrefixOf`) . (^. L.label)) (allSnippets cs)
 
 completionDocTests :: [TestTree]
 completionDocTests =
