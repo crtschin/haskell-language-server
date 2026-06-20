@@ -8,7 +8,7 @@ module Ide.Plugin.Export.ExactPrint
   , mkExportIE
   , mkExportList
   , appendIE
-  , removeNamedIE
+  , removeMatchingIE
   , expandExportList
   , addCtorUnderParent
   , removeCtorUnderParent
@@ -124,10 +124,7 @@ ieVar w =
     Nothing
 #endif
 
--- | Bare @T@ (no constructors listed).
-mkTypeAbsIE :: RdrName -> LIE GhcPs
-mkTypeAbsIE = mkTypeAbsIE' . mkIEName
-
+-- | Bare @T@ (no constructors listed), reusing a wrapped head name.
 mkTypeAbsIE' :: LIEWrappedName GhcPs -> LIE GhcPs
 mkTypeAbsIE' w =
   reLocA $ L noSrcSpan $ IEThingAbs
@@ -304,8 +301,8 @@ transferItemDP = transferEntryDP
 transferItemDP a b = let (r, _, _) = runTransform (transferEntryDP a b) in r
 #endif
 
-removeNamedIE :: RdrName -> LExportList -> Maybe LExportList
-removeNamedIE name (L l items) = case break matches items of
+removeMatchingIE :: (IE GhcPs -> Bool) -> LExportList -> Maybe LExportList
+removeMatchingIE p (L l items) = case break matches items of
   (_, []) -> Nothing
   (pre, removed : post) ->
     let kept = pre ++ post
@@ -313,8 +310,7 @@ removeNamedIE name (L l items) = case break matches items of
         kept'' = if null pre then reuseHeadDP removed kept' else kept'
     in Just (L l kept'')
   where
-    fs = rdrNameFS name
-    matches (L _ ie) = parentNameIs fs ie
+    matches (L _ ie) = p ie
     -- The new first item inherits the removed head's entry delta and any
     -- preceding comments.
     reuseHeadDP _       []     = []
@@ -380,10 +376,12 @@ removeCtorUnderParent parent ctor (L l items) =
           in (True, L itemLoc ie')
       | otherwise = (acc, lie)
 
+    -- Reuse the original head so a @type@ keyword or operator wrapping survives
+    -- the downgrade (e.g. @type (:<)(C)@ becomes @type (:<)@, not @(:<)@).
     downgradeToAbs :: IE GhcPs -> IE GhcPs
-    downgradeToAbs ie
-      | Just _ <- ieThingWithChildren ie = unLoc (mkTypeAbsIE parent)
-      | otherwise                        = ie
+    downgradeToAbs ie = case ieThingWithHead ie of
+      Just n  -> unLoc (mkTypeAbsIE' (setEntryDP n (SameLine 0)))
+      Nothing -> ie
 
     normaliseChildren :: [LIEWrappedName GhcPs] -> [LIEWrappedName GhcPs]
     normaliseChildren newCs =

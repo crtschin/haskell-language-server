@@ -7,6 +7,8 @@ library
     other-modules:    ExportAll
                       ExpandExports
                       Complete
+                      CppExpand
+                      CppExpandSafe
     hs-source-dirs:   .
     build-depends:    base
     default-language: Haskell2010

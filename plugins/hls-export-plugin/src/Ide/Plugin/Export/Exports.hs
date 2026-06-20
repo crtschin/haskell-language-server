@@ -1,6 +1,7 @@
 module Ide.Plugin.Export.Exports
   ( isExplicit
   , isExported
+  , expandListSafe
   , setExportListExpanding
   , addExport
   , addConstructorExport
@@ -8,9 +9,9 @@ module Ide.Plugin.Export.Exports
   , removeConstructorExport
   ) where
 
-import           Data.List                          (find, findIndex)
+import           Data.List                          (find)
 import           Data.Maybe                         (catMaybes, isJust,
-                                                     listToMaybe)
+                                                     isNothing, listToMaybe)
 import           Data.Text                          (Text)
 import           Data.Text.Utf16.Rope.Mixed         (Rope)
 import           Development.IDE.GHC.Compat
@@ -41,19 +42,29 @@ addExportList ps items = do
   let listText = printExportList (mkExportList items)
   Just [TextEdit (Range end end) (" " <> listText)]
 
--- | Additive: an existing list keeps every entry and only gains the missing
--- items, so a partial list is expanded in place.
-setExportListExpanding :: ParsedSource -> [LIE GhcPs] -> Maybe [TextEdit]
-setExportListExpanding = setExportListWith expandExportList
+-- | False when expanding the list would reprint an existing CPP export list
+-- (silently dropping the directives the parser stripped), or the buffer needed
+-- to check for them could not be read. A module with no list yet is always safe:
+-- a fresh list is inserted, with no directives to clobber.
+expandListSafe :: Bool -> Maybe Rope -> ParsedSource -> Bool
+expandListSafe isCpp msrc ps = case hsmodExports (unLoc ps) of
+  Nothing      -> True
+  Just exports
+    | not isCpp     -> True
+    | isNothing msrc -> False
+    | otherwise     -> maybe False (not . spanHasCpp msrc) (srcSpanToRange (getLoc exports))
 
--- | Replace the export list with @merge items@ applied to the current one,
--- adding a fresh list after the module name when there is none yet.
-setExportListWith :: ([LIE GhcPs] -> LExportList -> LExportList) -> ParsedSource -> [LIE GhcPs] -> Maybe [TextEdit]
-setExportListWith merge ps items = case hsmodExports (unLoc ps) of
-  Nothing      -> addExportList ps items
-  Just exports -> do
-    r <- srcSpanToRange (getLoc exports)
-    Just [TextEdit r (printExportList (merge items (makeDeltaAst exports)))]
+-- | Additive: an existing list keeps every entry and only gains the missing
+-- items, so a partial list is expanded in place. Declines (like the removal
+-- actions) when reprinting the existing list would drop CPP directives.
+setExportListExpanding :: Bool -> Maybe Rope -> ParsedSource -> [LIE GhcPs] -> Maybe [TextEdit]
+setExportListExpanding isCpp msrc ps items
+  | not (expandListSafe isCpp msrc ps) = Nothing
+  | otherwise = case hsmodExports (unLoc ps) of
+      Nothing      -> addExportList ps items
+      Just exports -> do
+        r <- srcSpanToRange (getLoc exports)
+        Just [TextEdit r (printExportList (expandExportList items (makeDeltaAst exports)))]
 
 -- | Extract the export list and pick an edit strategy: splice surgically when
 -- the span holds a CPP directive, otherwise reprint the whole transformed list.
@@ -97,24 +108,25 @@ insertAfterOpen (Range (Position sl sc) _) itemTxt =
 -- entry, offered only when a directive-free side exists ('deleteOneClean').
 removeExport :: Maybe Rope -> ParsedSource -> RdrName -> Maybe [TextEdit]
 removeExport msrc ps name =
-  withExportList msrc ps (removeNamedIE name) $ \_ (L _ items) ->
-    fmap (:[]) (deleteOneClean msrc getLocA (parentNameIs (rdrNameFS name) . unLoc) items)
+  withExportList msrc ps (removeMatchingIE matches) $ \_ (L _ items) ->
+    fmap (:[]) (deleteOneClean msrc getLocA (matches . unLoc) items)
+  where
+    matches = parentNameIs (rdrNameFS name)
 
 removeConstructorExport :: Maybe Rope -> RdrName -> RdrName -> ParsedSource -> Maybe [TextEdit]
 removeConstructorExport msrc parent ctor ps =
   withExportList msrc ps (removeCtorUnderParent parent ctor) $ \_ (L _ items) ->
     surgicalRemoveCtor msrc (rdrNameFS parent) (rdrNameFS ctor) items
 
--- | Drop one constructor child from the first matching @T(...)@ entry. Declines
--- the only-child case (a text delete cannot downgrade @T(C)@ to @T@) and any
--- non-@IEThingWith@ shape, matching the reprint path's CPP refusal for those.
+-- | Drop one constructor child from the first matching @T(...)@ entry.
+-- 'deleteOneClean' declines the only-child case on its own (a sole child has no
+-- neighbour separator to consume), which matches the reprint path's CPP refusal
+-- to downgrade @T(C)@ to @T@.
 surgicalRemoveCtor :: Maybe Rope -> FastString -> FastString -> [LIE GhcPs] -> Maybe [TextEdit]
 surgicalRemoveCtor msrc parentFS ctorFS items = do
   L _ ie <- find (parentNameIs parentFS . unLoc) items
   children <- ieThingWithChildren ie
-  if length children < 2
-    then Nothing
-    else fmap (:[]) (deleteOneClean msrc getLocA ((== ctorFS) . lieWrappedNameFS) children)
+  fmap (:[]) (deleteOneClean msrc getLocA ((== ctorFS) . lieWrappedNameFS) children)
 
 -- | Surgically delete the one matching element from a located list, consuming
 -- the separator on whichever neighbouring side is free of a CPP directive.
@@ -124,20 +136,17 @@ surgicalRemoveCtor msrc parentFS ctorFS items = do
 -- exactly one element and one comma, so the result is well formed in every CPP
 -- configuration.
 deleteOneClean :: Maybe Rope -> (a -> SrcSpan) -> (a -> Bool) -> [a] -> Maybe TextEdit
-deleteOneClean msrc spanOf match items = do
-  i <- findIndex match items
-  Range tStart tEnd <- srcSpanToRange (spanOf (items !! i))
-  let following = do
-        next <- items !!? (i + 1)
-        Range nStart _ <- srcSpanToRange (spanOf next)
-        Just (Range tStart nStart)
-      preceding = do
-        prev <- items !!? (i - 1)
-        Range _ pEnd <- srcSpanToRange (spanOf prev)
-        Just (Range pEnd tEnd)
-  range <- listToMaybe (filter (not . spanHasCpp msrc) (catMaybes [following, preceding]))
-  Just (TextEdit range mempty)
-  where
-    xs !!? n
-      | n < 0 || n >= length xs = Nothing
-      | otherwise               = Just (xs !! n)
+deleteOneClean msrc spanOf match items = case break match items of
+  (_, [])            -> Nothing
+  (pre, target:post) -> do
+    Range tStart tEnd <- srcSpanToRange (spanOf target)
+    let following = do
+          next <- listToMaybe post
+          Range nStart _ <- srcSpanToRange (spanOf next)
+          Just (Range tStart nStart)
+        preceding = do
+          prev <- listToMaybe (reverse pre)
+          Range _ pEnd <- srcSpanToRange (spanOf prev)
+          Just (Range pEnd tEnd)
+    range <- listToMaybe (filter (not . spanHasCpp msrc) (catMaybes [following, preceding]))
+    Just (TextEdit range mempty)

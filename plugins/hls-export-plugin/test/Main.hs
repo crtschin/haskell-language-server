@@ -135,23 +135,19 @@ wellFormedExportList txt = not (any (`T.isInfixOf` compact) ["(,", ",,"])
   where
     compact = T.filter (not . isSpace) (T.unlines (exportListRegion txt))
 
--- | Run the export action, assert the result is well-formed, return its text.
-exportAndCheck :: TextDocumentIdentifier -> Range -> Session T.Text
-exportAndCheck doc pos = do
-    executeExportAction doc pos
+-- | Run an action at the position, assert the result has a well-formed export
+-- list, and return the resulting document text.
+runAndCheck :: (TextDocumentIdentifier -> Range -> Session ()) -> TextDocumentIdentifier -> Range -> Session T.Text
+runAndCheck act doc pos = do
+    act doc pos
     txt <- documentContents doc
     liftIO $ wellFormedExportList txt
         @? ("malformed export list, got:\n" <> T.unpack txt)
     pure txt
 
--- | Run the unexport action, assert the result is well-formed, return its text.
-removeAndCheck :: TextDocumentIdentifier -> Range -> Session T.Text
-removeAndCheck doc pos = do
-    executeRemoveAction doc pos
-    txt <- documentContents doc
-    liftIO $ wellFormedExportList txt
-        @? ("malformed export list, got:\n" <> T.unpack txt)
-    pure txt
+exportAndCheck, removeAndCheck :: TextDocumentIdentifier -> Range -> Session T.Text
+exportAndCheck = runAndCheck executeExportAction
+removeAndCheck = runAndCheck executeRemoveAction
 
 -- | Crudely re-run CPP for the macro EXAMPLE_FLAG over already-edited text,
 -- keeping the branch the given definedness selects. Single level, just enough
@@ -435,6 +431,19 @@ main = defaultTestRunner $ testGroup "Export"
 
         , testCase "constructor not in export list suppresses remove action" $ runExport "RemoveCtor.hs" $ \doc ->
             noRemoveOffered doc (rangeAt 2 25)  -- on `Foo3`, not in any entry
+
+        , testCase "constructor sharing its type's name does not unexport the type" $ runExport "RemoveCtorNameClash.hs" $ \doc ->
+            -- `data Bar = Bar`; the constructor is not exported (only the abstract
+            -- type is), so unexport must not fall back to removing the type entry.
+            noRemoveOffered doc (rangeAt 5 11)  -- on the constructor `Bar`
+
+        , testCase "unexporting the type still works when a constructor shares its name" $ runExport "RemoveCtorNameClash.hs" $ \doc -> do
+            executeRemoveAction doc (rangeAt 5 5)  -- on the type `Bar`
+            containsAfter doc ["module RemoveCtorNameClash (foo)"]
+
+        , testCase "downgrading an operator type keeps the type keyword" $ runExport "RemoveCtorOp.hs" $ \doc -> do
+            executeRemoveAction doc (rangeAt 4 15)  -- on `Op`, the sole constructor of (:+:)
+            containsAfter doc ["(type (:+:)) where", "(type (:+:) ) where"]
         ]
 
     , testGroup "Remove: type classes"
@@ -550,6 +559,18 @@ main = defaultTestRunner $ testGroup "Export"
             target <- openDoc "ExportAll.hs" "haskell"
             waitForKickDone
             assertNotOffered "Export all symbols" target (rangeAt 2 0)  -- on `value`
+
+        , testCase "withheld when the export list contains a CPP directive" $ runExportResolveExposed $ \_dir -> do
+            -- Reprinting the list would drop the #ifdef the parser stripped, so the
+            -- additive expand is withheld (mirrors the remove actions' CPP refusal).
+            target <- openDoc "CppExpand.hs" "haskell"
+            waitForKickDone
+            assertNotOffered "Export all symbols" target (rangeAt 1 7)  -- on the module name
+
+        , testCase "still offered when directives are outside the export list" $ runExportResolveExposed $ \_dir -> do
+            target <- openDoc "CppExpandSafe.hs" "haskell"
+            waitForKickDone
+            assertOffered "Export all symbols" target (rangeAt 1 7)  -- on the module name
         ]
     ]
 

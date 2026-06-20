@@ -48,10 +48,14 @@ explicitExportCodeActionProvider state _pId (CodeActionParams _ _ doc range _) =
     runActionE "Export.GetParsedModuleWithComments" state $ do
       pm <- useE GetParsedModuleWithComments nfp
       let ps = pm_parsed_source pm
+          isCpp = xopt LangExt.Cpp (ms_hspp_opts (pm_mod_summary pm))
       case locateUnderCursor (range ^. L.start) ps of
         Just Header -> do
           let hasUnexported = not (all (flip isExported ps . snd) (moduleExports ps))
-          pure [ (ExportEverything, "Export all symbols") | hasUnexported ]
+          -- A reprint of an existing CPP export list drops the directives the
+          -- parser stripped, so the buffer is needed to check for them.
+          msrc <- if isCpp && isExplicit ps then snd <$> useE GetFileContents nfp else pure Nothing
+          pure [ (ExportEverything, "Export all symbols") | hasUnexported, expandListSafe isCpp msrc ps ]
         _ -> pure []
   pure . InL . map InR $
     [ mkAction title & L.data_ ?~ toJSON mode | (mode, title) <- offered ]
@@ -64,7 +68,9 @@ explicitExportCodeActionResolveProvider state _pId ca uri mode = do
       runActionE "Export.ResolveAll" state $ do
         pm <- useE GetParsedModuleWithComments nfp
         let ps = pm_parsed_source pm
-        pure $ setExportListExpanding ps (map (uncurry mkExportIE) (moduleExports ps))
+            isCpp = xopt LangExt.Cpp (ms_hspp_opts (pm_mod_summary pm))
+        msrc <- if isCpp && isExplicit ps then snd <$> useE GetFileContents nfp else pure Nothing
+        pure $ setExportListExpanding isCpp msrc ps (map (uncurry mkExportIE) (moduleExports ps))
   case medits of
     Just edits ->
       pure $ ca & L.edit ?~ singleFileEdit uri edits
@@ -129,9 +135,15 @@ addAction msrc under ps = case under of
 removeAction :: Maybe Rope -> UnderCursor -> ParsedSource -> Maybe (Text, Text, [TextEdit])
 removeAction msrc under ps = case under of
   Decl _ n -> removeNamed n
+  -- A bare uppercase export entry equal to the type's own name denotes the type
+  -- (GHC's export-list default), not the constructor, so only fall back to a
+  -- standalone removal when the names differ. Otherwise unexporting at a cursor
+  -- on `data Bar = Bar` would delete the abstract type export the constructor
+  -- was never part of.
   Constructor t c ->
-    ("Unexport", T.pack (printRdrName c),)
-      <$> (removeConstructorExport msrc t c ps <|> removeExport msrc ps c)
+    ("Unexport", T.pack (printRdrName c),) <$>
+      (removeConstructorExport msrc t c ps
+        <|> if rdrNameFS c == rdrNameFS t then Nothing else removeExport msrc ps c)
   Header -> Nothing
   where
     removeNamed n

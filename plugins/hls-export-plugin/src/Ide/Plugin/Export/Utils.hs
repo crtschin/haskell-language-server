@@ -37,6 +37,16 @@ ieThingWithChildren (IEThingWith _ _ _ cs)   = Just cs
 #endif
 ieThingWithChildren _                        = Nothing
 
+-- | The head name of an @IEThingWith@ (@T@ in @T(C1, C2)@), keeping its original
+-- @type@/operator wrapping, or 'Nothing' otherwise.
+ieThingWithHead :: IE GhcPs -> Maybe (LIEWrappedName GhcPs)
+#if MIN_VERSION_ghc(9,9,0)
+ieThingWithHead (IEThingWith _ n _ _ _) = Just n
+#else
+ieThingWithHead (IEThingWith _ n _ _)   = Just n
+#endif
+ieThingWithHead _                       = Nothing
+
 ieWrappedRdrName :: IEWrappedName GhcPs -> RdrName
 ieWrappedRdrName = \case
   IEName _ (L _ rdr)    -> rdr
