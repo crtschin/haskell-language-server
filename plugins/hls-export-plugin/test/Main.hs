@@ -144,6 +144,15 @@ exportAndCheck doc pos = do
         @? ("malformed export list, got:\n" <> T.unpack txt)
     pure txt
 
+-- | Run the unexport action, assert the result is well-formed, return its text.
+removeAndCheck :: TextDocumentIdentifier -> Range -> Session T.Text
+removeAndCheck doc pos = do
+    executeRemoveAction doc pos
+    txt <- documentContents doc
+    liftIO $ wellFormedExportList txt
+        @? ("malformed export list, got:\n" <> T.unpack txt)
+    pure txt
+
 -- | Crudely re-run CPP for the macro EXAMPLE_FLAG over already-edited text,
 -- keeping the branch the given definedness selects. Single level, just enough
 -- to inspect the configuration the server did not parse.
@@ -179,6 +188,22 @@ assertExportedUnconditionally name txt =
 assertFlaggedBlockKept :: T.Text -> T.Text -> Assertion
 assertFlaggedBlockKept name txt =
     assertContainsAll txt flagBlock >> assertExportedUnconditionally name txt
+
+-- | @name@ no longer appears anywhere in the export-list region.
+assertNotInExportList :: T.Text -> T.Text -> Assertion
+assertNotInExportList name txt =
+    not (name `T.isInfixOf` T.unlines (exportListRegion txt))
+        @? (T.unpack name <> " should be gone from the export list, got:\n" <> T.unpack txt)
+
+-- | Both CPP configurations of the edited text keep a well-formed export list,
+-- so a surgical delete never breaks the branch the server did not parse.
+assertBothConfigsWellFormed :: T.Text -> Assertion
+assertBothConfigsWellFormed txt = mapM_ check [True, False]
+  where
+    check defined =
+        let cfg = preprocessExampleFlag defined txt
+        in wellFormedExportList cfg
+            @? ("malformed export list for EXAMPLE_FLAG=" <> show defined <> ":\n" <> T.unpack cfg)
 
 -- | Export the binding at the position and assert the result contains one of
 -- the @expected@ variants.
@@ -438,6 +463,48 @@ main = defaultTestRunner $ testGroup "Export"
 
         , testCase "no remove action when cursor on RHS" $ runExport "RemoveExport.hs" $ \doc ->
             noRemoveOffered doc (rangeAt 3 6)  -- on the `1` of `foo = 1`
+        ]
+
+    , testGroup "Remove: CPP in the export list"
+        -- EXAMPLE_FLAG is never defined, so #ifdef branches are inactive. A
+        -- surgical unexport must keep every directive verbatim and stay valid in
+        -- both configurations; it is withheld when the symbol's only active
+        -- neighbour sits across a directive (no directive-free side to delete).
+        [ testCase "unexports a first item with a clean following sibling" $ runExport "CppUnexportClean.hs" $ \doc -> do
+            txt <- removeAndCheck doc (rangeAt 10 0)  -- on `foo`
+            liftIO $ do
+                assertContainsAll txt (flagBlock <> ["( bar"])
+                assertNotInExportList "foo" txt
+                assertBothConfigsWellFormed txt
+
+        , testCase "unexports a last item with a clean preceding sibling" $ runExport "CppUnexportClean.hs" $ \doc -> do
+            txt <- removeAndCheck doc (rangeAt 13 0)  -- on `bar`
+            liftIO $ do
+                assertContainsAll txt (flagBlock <> ["( foo"])
+                assertNotInExportList "bar" txt
+                assertBothConfigsWellFormed txt
+
+        , testCase "no unexport for the sole active item" $ runExport "CppExportTail.hs" $ \doc ->
+            noRemoveOffered doc (rangeAt 9 0)  -- on `foo`, flagged is conditional
+
+        , testCase "no unexport when a directive wedges the only neighbour (last)" $ runExport "CppUnexportWedged.hs" $ \doc ->
+            noRemoveOffered doc (rangeAt 13 0)  -- on `bar`, separated from `foo` by the block
+
+        , testCase "no unexport when a directive wedges the only neighbour (first)" $ runExport "CppUnexportWedged.hs" $ \doc ->
+            noRemoveOffered doc (rangeAt 10 0)  -- on `foo`, separated from `bar` by the block
+
+        , testCase "unexports a constructor child beside a directive" $ runExport "CppCtorUnexport.hs" $ \doc -> do
+            txt <- removeAndCheck doc (rangeAt 17 18)  -- on `Foo2`
+            liftIO $ do
+                assertContainsAll txt ["#ifdef EXAMPLE_FLAG\n      , Foo3\n#endif"]
+                assertNotInExportList "Foo2" txt
+                assertBothConfigsWellFormed txt
+
+        , testCase "no unexport for the only active constructor child" $ runExport "CppCtorUnexport.hs" $ \doc ->
+            noRemoveOffered doc (rangeAt 18 11)  -- on `Bar1`, sole active child of Bar(...)
+
+        , testCase "no unexport for a constructor only in an inactive branch" $ runExport "CppCtorUnexport.hs" $ \doc ->
+            noRemoveOffered doc (rangeAt 17 25)  -- on `Foo3`, under #ifdef
         ]
 
     , testGroup "Export all symbols"
