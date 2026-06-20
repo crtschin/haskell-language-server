@@ -16,15 +16,15 @@ rdrNameFS = occNameFS . rdrNameOcc
 ieParentName :: IE GhcPs -> Maybe RdrName
 ieParentName e = case e of
 #if MIN_VERSION_ghc(9,9,0)
-  IEVar _ (L _ wn) _           -> Just (ieWrappedRdrName wn)
-  IEThingAbs _ (L _ wn) _      -> Just (ieWrappedRdrName wn)
-  IEThingAll _ (L _ wn) _      -> Just (ieWrappedRdrName wn)
-  IEThingWith _ (L _ wn) _ _ _ -> Just (ieWrappedRdrName wn)
+  IEVar _ (L _ wn) _           -> Just (ieWrappedName wn)
+  IEThingAbs _ (L _ wn) _      -> Just (ieWrappedName wn)
+  IEThingAll _ (L _ wn) _      -> Just (ieWrappedName wn)
+  IEThingWith _ (L _ wn) _ _ _ -> Just (ieWrappedName wn)
 #else
-  IEVar _ (L _ wn)             -> Just (ieWrappedRdrName wn)
-  IEThingAbs _ (L _ wn)        -> Just (ieWrappedRdrName wn)
-  IEThingAll _ (L _ wn)        -> Just (ieWrappedRdrName wn)
-  IEThingWith _ (L _ wn) _ _   -> Just (ieWrappedRdrName wn)
+  IEVar _ (L _ wn)             -> Just (ieWrappedName wn)
+  IEThingAbs _ (L _ wn)        -> Just (ieWrappedName wn)
+  IEThingAll _ (L _ wn)        -> Just (ieWrappedName wn)
+  IEThingWith _ (L _ wn) _ _   -> Just (ieWrappedName wn)
 #endif
   _                            -> Nothing
 
@@ -47,25 +47,13 @@ ieThingWithHead (IEThingWith _ n _ _)   = Just n
 #endif
 ieThingWithHead _                       = Nothing
 
-ieWrappedRdrName :: IEWrappedName GhcPs -> RdrName
-ieWrappedRdrName = \case
-  IEName _ (L _ rdr)    -> rdr
-  IEPattern _ (L _ rdr) -> rdr
-  IEType _ (L _ rdr)    -> rdr
-#if MIN_VERSION_ghc(9,11,0)
-  IEDefault _ (L _ rdr) -> rdr
-#endif
-#if MIN_VERSION_ghc(9,13,0)
-  IEData _ (L _ rdr)    -> rdr
-#endif
-
 -- | True when the export item's head name is the given 'FastString'.
 parentNameIs :: FastString -> IE GhcPs -> Bool
 parentNameIs fs = maybe False ((== fs) . rdrNameFS) . ieParentName
 
 -- | The 'FastString' of a located wrapped name, e.g. an @IEThingWith@ child.
 lieWrappedNameFS :: LIEWrappedName GhcPs -> FastString
-lieWrappedNameFS = rdrNameFS . ieWrappedRdrName . unLoc
+lieWrappedNameFS = rdrNameFS . ieWrappedName . unLoc
 
 -- | True when @n@ is listed as a child constructor of an @IEThingWith@.
 isInIE :: FastString -> IE GhcPs -> Bool

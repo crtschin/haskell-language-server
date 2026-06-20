@@ -6,6 +6,7 @@ import           Control.Applicative              ((<|>))
 import           Control.Concurrent.STM           (atomically)
 import           Control.Lens
 import           Control.Monad.Error.Class        (throwError)
+import           Control.Monad.Except             (ExceptT)
 import           Control.Monad.IO.Class           (liftIO)
 import           Data.Aeson                       (toJSON)
 import           Data.Maybe                       (isJust, isNothing)
@@ -41,6 +42,18 @@ descriptor plId =
     , Ide.pluginCommands = explicitExportCommand
     }
 
+-- | Whether the module was compiled with CPP.
+moduleHasCpp :: ParsedModule -> Bool
+moduleHasCpp pm = xopt LangExt.Cpp (ms_hspp_opts (pm_mod_summary pm))
+
+-- | The file buffer, fetched only when an existing CPP export list might hold
+-- directives a reprint would drop; 'Nothing' otherwise. The single home for the
+-- CPP-buffer gate the offer and resolve must agree on.
+cppExportBuffer :: Bool -> ParsedSource -> NormalizedFilePath -> ExceptT PluginError Action (Maybe Rope)
+cppExportBuffer isCpp ps nfp
+  | isCpp && isExplicit ps = snd <$> useE GetFileContents nfp
+  | otherwise              = pure Nothing
+
 explicitExportCodeActionProvider :: PluginMethodHandler IdeState 'Method_TextDocumentCodeAction
 explicitExportCodeActionProvider state _pId (CodeActionParams _ _ doc range _) = do
   nfp <- getNormalizedFilePathE (doc ^. L.uri)
@@ -48,13 +61,11 @@ explicitExportCodeActionProvider state _pId (CodeActionParams _ _ doc range _) =
     runActionE "Export.GetParsedModuleWithComments" state $ do
       pm <- useE GetParsedModuleWithComments nfp
       let ps = pm_parsed_source pm
-          isCpp = xopt LangExt.Cpp (ms_hspp_opts (pm_mod_summary pm))
+          isCpp = moduleHasCpp pm
       case locateUnderCursor (range ^. L.start) ps of
         Just Header -> do
           let hasUnexported = not (all (flip isExported ps . snd) (moduleExports ps))
-          -- A reprint of an existing CPP export list drops the directives the
-          -- parser stripped, so the buffer is needed to check for them.
-          msrc <- if isCpp && isExplicit ps then snd <$> useE GetFileContents nfp else pure Nothing
+          msrc <- cppExportBuffer isCpp ps nfp
           pure [ (ExportEverything, "Export all symbols") | hasUnexported, expandListSafe isCpp msrc ps ]
         _ -> pure []
   pure . InL . map InR $
@@ -68,8 +79,8 @@ explicitExportCodeActionResolveProvider state _pId ca uri mode = do
       runActionE "Export.ResolveAll" state $ do
         pm <- useE GetParsedModuleWithComments nfp
         let ps = pm_parsed_source pm
-            isCpp = xopt LangExt.Cpp (ms_hspp_opts (pm_mod_summary pm))
-        msrc <- if isCpp && isExplicit ps then snd <$> useE GetFileContents nfp else pure Nothing
+            isCpp = moduleHasCpp pm
+        msrc <- cppExportBuffer isCpp ps nfp
         pure $ setExportListExpanding isCpp msrc ps (map (uncurry mkExportIE) (moduleExports ps))
   case medits of
     Just edits ->
@@ -84,7 +95,7 @@ quickCodeActionHandlers state _plId (CodeActionParams _ _ doc range _) = do
   (ps, isCpp, mUnder, msrc) <- runActionE "Export.getInputs" state $ do
     pm <- useE GetParsedModuleWithComments nfp
     let ps = pm_parsed_source pm
-        isCpp = xopt LangExt.Cpp (ms_hspp_opts (pm_mod_summary pm))
+        isCpp = moduleHasCpp pm
         mUnder = if isExplicit ps then locateUnderCursor (range ^. L.start) ps else Nothing
     -- Only a CPP module about to be offered an action needs the buffer (to find
     -- directives in the export list), so skip the fetch otherwise.

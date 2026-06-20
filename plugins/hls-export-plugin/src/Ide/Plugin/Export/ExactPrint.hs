@@ -33,16 +33,12 @@ import           Development.IDE.GHC.Orphans               ()
 import           GHC                                       (AnnList (..),
                                                             DeltaPos (..),
                                                             EpAnn (..),
-                                                            EpaLocation,
-                                                            EpaLocation' (..),
                                                             TrailingAnn (..),
                                                             emptyComments)
 #elif MIN_VERSION_ghc(9,9,0)
 import           GHC                                       (AnnList (..),
                                                             DeltaPos (..),
                                                             EpAnn (..),
-                                                            EpaLocation,
-                                                            EpaLocation' (..),
                                                             LocatedL,
                                                             NoAnn (..),
                                                             TrailingAnn (..),
@@ -77,7 +73,6 @@ import           Language.Haskell.GHC.ExactPrint           (runTransform)
 import           GHC                                       (AnnListBrackets (..),
                                                             EpToken (..),
                                                             LocatedLI)
-import           GHC.Types.SrcLoc                          (UnhelpfulSpanReason (..))
 #else
 import           GHC                                       (AddEpAnn (..))
 #endif
@@ -207,7 +202,7 @@ mkTypeWithIE parent ctors =
 mkExportList :: [LIE GhcPs] -> LExportList
 mkExportList items =
 #if MIN_VERSION_ghc(9,9,0)
-  L (EpAnn (entryAnchor (SameLine 1)) listAnn emptyComments) (commaList items)
+  L (EpAnn (epl 1) listAnn emptyComments) (commaList items)
 #else
   L (SrcSpanAnn (EpAnn (Anchor placeholderRealSpan (MovedAnchor (SameLine 1))) listAnn emptyComments) noSrcSpan) (commaList items)
 #endif
@@ -407,15 +402,6 @@ freshCtorEntry :: RdrName -> RdrName -> [LIE GhcPs] -> Maybe Text
 freshCtorEntry parent ctor items = case ctorExportEdit parent ctor items of
   AlreadyExported -> Nothing
   _               -> Just (printIE (mkTypeWithIE parent (ctor :| [])))
-
-#if MIN_VERSION_ghc(9,9,0)
-entryAnchor :: DeltaPos -> EpaLocation
-#if MIN_VERSION_ghc(9,11,0)
-entryAnchor dp = EpaDelta (UnhelpfulSpan UnhelpfulNoLocationInfo) dp []
-#else
-entryAnchor dp = EpaDelta dp []
-#endif
-#endif
 
 -- | How to add @ctor@ to an export list so its parent type @T@ exports it.
 data CtorEdit
