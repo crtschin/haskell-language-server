@@ -14,6 +14,7 @@ module Development.IDE.GHC.ExactPrint.Annotation
   , modifyAnns
   , addParens
   , parenthesizeName
+  , parenthesizeOperatorName
   ) where
 
 import           Data.Bifunctor                  (first)
@@ -135,3 +136,10 @@ parenthesizeName (L (SrcSpanAnn ann l) rdr) =
 genAnchor0 :: Anchor
 genAnchor0 = Anchor (realSrcSpan generatedSrcSpan) (MovedAnchor (SameLine 0))
 #endif
+
+-- | Parenthesize a name only when it is an operator, e.g. @(<|)@ but leave
+-- @foo@ (or @foo_bar@, @x'@) untouched.
+parenthesizeOperatorName :: LocatedN RdrName -> LocatedN RdrName
+parenthesizeOperatorName ln
+  | isSymOcc (rdrNameOcc (unLoc ln)) = parenthesizeName ln
+  | otherwise                        = ln

@@ -18,15 +18,14 @@ module Development.IDE.Plugin.CodeAction.ExactPrint (
 
 import           Control.Monad
 import           Control.Monad.Trans
-import           Data.Char                              (isAlphaNum)
 import           Data.Data                              (Data)
 import           Data.Generics                          (listify)
 import qualified Data.Text                              as T
 import           Development.IDE.GHC.Compat             hiding (Annotation)
 import           Development.IDE.GHC.Error
 import           Development.IDE.GHC.ExactPrint
-import           Development.IDE.GHC.ExactPrint.Annotation (addParens, epl,
-                                                            modifyAnns)
+import           Development.IDE.GHC.ExactPrint.Annotation (epl, modifyAnns,
+                                                            parenthesizeOperatorName)
 import           Development.IDE.GHC.Util
 import           Development.IDE.Spans.Common
 import           GHC.Exts                               (IsList (fromList))
@@ -561,7 +560,7 @@ extendHiding symbol (L l idecls) mlies df = do
   src <- uniqueSrcSpanT
   top <- uniqueSrcSpanT
   rdr <- liftParseAST df symbol
-  rdr <- pure $ modifyAnns rdr $ addParens (isOperator $ unLoc rdr)
+  rdr <- pure $ parenthesizeOperatorName rdr
   let lie = reLocA $ L src $ IEName
                                noExtField
                                rdr
@@ -578,8 +577,6 @@ extendHiding symbol (L l idecls) mlies df = do
   x <- pure $ if hasSibling then first addComma x else x
   lies <- pure $ over _head (`setEntryDP` SameLine 1) lies
   return $ L l idecls{ideclImportList = Just (EverythingBut, L l' $ x : lies)}
- where
-  isOperator = not . all isAlphaNum . occNameString . rdrNameOcc
 
 deleteFromImport ::
   String ->

@@ -79,11 +79,10 @@ import           GHC                                       (AddEpAnn (..))
 import           Data.Maybe                                (listToMaybe)
 import           Development.IDE.GHC.ExactPrint.Annotation (ensureTrailingComma,
                                                             epl, isCommaAnn,
-                                                            parenthesizeName,
+                                                            parenthesizeOperatorName,
                                                             removeTrailingCommaAnn,
                                                             trailingAnns,
                                                             withTrailingComma)
-import           GHC                                       (LocatedN)
 import           Ide.Plugin.Export.Cursor                  (ExportFlavor (..))
 import           Ide.Plugin.Export.Utils
 
@@ -257,7 +256,7 @@ mkWrappedName kind rdr =
     WrapPattern -> IEPattern keywordTok spacedName
     WrapType    -> IEType keywordTok spacedName
   where
-    plainName = parenthesizeOperator (reLocA (L noSrcSpan rdr))
+    plainName = parenthesizeOperatorName (reLocA (L noSrcSpan rdr))
     spacedName = setEntryDP plainName (SameLine 1)
     keywordTok =
 #if MIN_VERSION_ghc(9,11,0)
@@ -265,11 +264,6 @@ mkWrappedName kind rdr =
 #else
       epl 0
 #endif
-
-parenthesizeOperator :: LocatedN RdrName -> LocatedN RdrName
-parenthesizeOperator ln
-  | isSymOcc (rdrNameOcc (unLoc ln)) = parenthesizeName ln
-  | otherwise = ln
 
 appendIE :: LIE GhcPs -> LExportList -> LExportList
 appendIE item (L l items) = L l (fixLast items ++ [newItem (not (null items))])
