@@ -8,10 +8,13 @@ module Ide.Plugin.Export.Exports
   , removeConstructorExport
   ) where
 
-import           Data.Maybe                         (isJust)
+import           Data.List                          (find, findIndex)
+import           Data.Maybe                         (catMaybes, isJust,
+                                                     listToMaybe)
 import           Data.Text                          (Text)
 import           Data.Text.Utf16.Rope.Mixed         (Rope)
 import           Development.IDE.GHC.Compat
+import           Development.IDE.GHC.Compat.Util    (FastString)
 import           Development.IDE.GHC.Error          (srcSpanToRange)
 import           Development.IDE.GHC.ExactPrint.CPP (spanHasCpp)
 import           Ide.Plugin.Export.ExactPrint
@@ -89,12 +92,52 @@ insertAfterOpen (Range (Position sl sc) _) itemTxt =
     -- `sc` is the column of `(`, so insert just past it.
     pos = Position sl (sc + 1)
 
--- | Removal reprints the transformed list, so decline when the span holds CPP:
--- reprinting would drop the directives the parser stripped.
+-- | Removal reprints the transformed list, which would drop the directives the
+-- parser stripped. Under CPP fall back to a surgical text delete of the targeted
+-- entry, offered only when a directive-free side exists ('deleteOneClean').
 removeExport :: Maybe Rope -> ParsedSource -> RdrName -> Maybe [TextEdit]
 removeExport msrc ps name =
-  withExportList msrc ps (removeNamedIE name) $ \_ _ -> Nothing
+  withExportList msrc ps (removeNamedIE name) $ \_ (L _ items) ->
+    fmap (:[]) (deleteOneClean msrc getLocA (parentNameIs (rdrNameFS name) . unLoc) items)
 
 removeConstructorExport :: Maybe Rope -> RdrName -> RdrName -> ParsedSource -> Maybe [TextEdit]
 removeConstructorExport msrc parent ctor ps =
-  withExportList msrc ps (removeCtorUnderParent parent ctor) $ \_ _ -> Nothing
+  withExportList msrc ps (removeCtorUnderParent parent ctor) $ \_ (L _ items) ->
+    surgicalRemoveCtor msrc (rdrNameFS parent) (rdrNameFS ctor) items
+
+-- | Drop one constructor child from the first matching @T(...)@ entry. Declines
+-- the only-child case (a text delete cannot downgrade @T(C)@ to @T@) and any
+-- non-@IEThingWith@ shape, matching the reprint path's CPP refusal for those.
+surgicalRemoveCtor :: Maybe Rope -> FastString -> FastString -> [LIE GhcPs] -> Maybe [TextEdit]
+surgicalRemoveCtor msrc parentFS ctorFS items = do
+  L _ ie <- find (parentNameIs parentFS . unLoc) items
+  children <- ieThingWithChildren ie
+  if length children < 2
+    then Nothing
+    else fmap (:[]) (deleteOneClean msrc getLocA ((== ctorFS) . lieWrappedNameFS) children)
+
+-- | Surgically delete the one matching element from a located list, consuming
+-- the separator on whichever neighbouring side is free of a CPP directive.
+-- Prefers the following side, which leaves a preceding item's trailing comment
+-- untouched. 'Nothing' when nothing matches, or no directive-free side exists
+-- (sole element, or both usable gaps cross a directive). This always removes
+-- exactly one element and one comma, so the result is well formed in every CPP
+-- configuration.
+deleteOneClean :: Maybe Rope -> (a -> SrcSpan) -> (a -> Bool) -> [a] -> Maybe TextEdit
+deleteOneClean msrc spanOf match items = do
+  i <- findIndex match items
+  Range tStart tEnd <- srcSpanToRange (spanOf (items !! i))
+  let following = do
+        next <- items !!? (i + 1)
+        Range nStart _ <- srcSpanToRange (spanOf next)
+        Just (Range tStart nStart)
+      preceding = do
+        prev <- items !!? (i - 1)
+        Range _ pEnd <- srcSpanToRange (spanOf prev)
+        Just (Range pEnd tEnd)
+  range <- listToMaybe (filter (not . spanHasCpp msrc) (catMaybes [following, preceding]))
+  Just (TextEdit range mempty)
+  where
+    xs !!? n
+      | n < 0 || n >= length xs = Nothing
+      | otherwise               = Just (xs !! n)
