@@ -246,6 +246,6 @@ idePlugins recorder = pluginDescToIdePlugins allPlugins
       let pId = "notes" in Notes.descriptor (pluginRecorder pId) pId :
 #endif
 #if hls_export
-      let pId = "export" in Export.descriptor pId :
+      let pId = "export" in Export.descriptor (pluginRecorder pId) pId :
 #endif
       GhcIde.descriptors (pluginRecorder "ghcide")

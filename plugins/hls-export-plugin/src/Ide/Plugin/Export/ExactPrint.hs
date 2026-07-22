@@ -1,11 +1,9 @@
-{-# LANGUAGE CPP                 #-}
-{-# LANGUAGE LambdaCase          #-}
-{-# LANGUAGE OverloadedStrings   #-}
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE CPP #-}
 
 module Ide.Plugin.Export.ExactPrint
   ( LExportList
   , mkExportIE
+  , availToLIE
   , appendIE
   , removeMatchingIE
   , addCtorUnderParent
@@ -70,6 +68,31 @@ type LExportList = LocatedLI [LIE GhcPs]
 #else
 type LExportList = LocatedL [LIE GhcPs]
 #endif
+
+-- | Render an 'AvailInfo' as export items.
+availToLIE :: (Name -> [Name] -> Bool) -> AvailInfo -> [LIE GhcPs]
+availToLIE isComplete = \case
+  AvailName n -> [nameToIE n]
+  AvailTC parent names pieces
+    -- The parent is in @names@ iff it is itself exported.
+    | parent `elem` names ->
+        case filter (/= parent) names ++ map flSelector pieces of
+          []     -> [mkExportIE ExportFamily (nameRdr parent)] -- T
+          m : ms
+            | isComplete parent (m : ms) ->
+                [mkExportIE ExportAll (nameRdr parent)] -- T(..)
+            | otherwise ->
+                [mkTypeWithIE (nameRdr parent) (fmap nameRdr (m :| ms))] -- T(a, b)
+    -- When only members are exported, the parent may not be in scope, so each
+    -- member is exported by its own name instead.
+    | otherwise -> map nameToIE names ++ map (nameToIE . flSelector) pieces
+  -- TODO: a bare selector is not a valid export under NoFieldSelectors.
+  AvailFL fl -> [nameToIE (flSelector fl)]
+  where
+    nameToIE n
+      | isDataOcc (nameOccName n) = mkExportIE ExportPattern (nameRdr n)
+      | otherwise                 = mkExportIE ExportName (nameRdr n)
+    nameRdr = mkRdrUnqual . nameOccName
 
 mkExportIE :: ExportFlavor -> RdrName -> LIE GhcPs
 mkExportIE flavor rdr = case flavor of
@@ -226,11 +249,8 @@ separatorComma :: [LIE GhcPs] -> Maybe TrailingAnn
 separatorComma items =
   listToMaybe [c | L ann _ <- items, c <- trailingAnns ann, isCommaAnn c]
 
--- | Drop the first element matching @p@. A removed head hands its entry delta
--- to the next element so the list keeps its start, and the new last element
--- loses its separator comma.
--- - @Nothing@ if nothing matches
--- - @Just []@ if the sole element was removed.
+-- | Drop the first element matching @p@, preserving the list's layout.
+-- 'Nothing' if nothing matches, @Just []@ if it was the sole element.
 removeListItem
   :: (LocatedAn AnnListItem a -> Bool)
   -> [LocatedAn AnnListItem a]
@@ -320,9 +340,7 @@ printIE :: LIE GhcPs -> Text
 printIE item = T.pack (exactPrint (setEntryDP (first removeTrailingCommaAnn item) (SameLine 0)))
 
 -- | A fresh @T(ctor)@ export entry rendered as text, or 'Nothing' if @ctor@ is
--- already exported in the parsed list. Under CPP this adds a standalone entry so
--- the splice never reprints an existing @T(...)@ span, which can straddle a
--- directive.
+-- already exported. See Note [Reprinting erases CPP directives].
 freshCtorEntry :: RdrName -> RdrName -> [LIE GhcPs] -> Maybe Text
 freshCtorEntry parent ctor items = case ctorExportEdit parent ctor items of
   AlreadyExported -> Nothing

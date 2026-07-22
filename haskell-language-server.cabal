@@ -1791,7 +1791,7 @@ common export
     cpp-options: -Dhls_export
 
 library hls-export-plugin
-  import: defaults, pedantic, warnings
+  import: defaults, pedantic, warnings, cabal
   if !flag(export)
     buildable: False
   exposed-modules:
@@ -1804,18 +1804,24 @@ library hls-export-plugin
   hs-source-dirs:     plugins/hls-export-plugin/src
   default-language:   GHC2021
   build-depends:
+    , aeson
     , containers
+    , extra
     , ghc
     , ghc-boot-th
     , ghc-exactprint
     , ghcide          == 2.14.0.0
     , haskell-language-server:hls-exactprint-utils
+    , hiedb           ^>= 0.8.0.0
     , hls-plugin-api  == 2.14.0.0
     , lens
     , lsp >=2.8
+    , mtl
     , stm
     , text
     , text-rope
+    , transformers
+    , unordered-containers
   default-extensions:
     , DataKinds
     , LambdaCase
