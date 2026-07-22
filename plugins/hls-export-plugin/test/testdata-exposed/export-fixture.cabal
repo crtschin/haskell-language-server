@@ -1,0 +1,41 @@
+cabal-version:      2.4
+name:               export-fixture
+version:            0.1.0.0
+
+library
+    exposed-modules:  ExposedApi
+    other-modules:    MakeExplicitUsed
+                      Users
+                      TrimExports
+                      TrimKeywords
+                      MultilineTrim
+                      TrimPartialCtor
+                      TrimUnusedCtor
+                      TrimImplicitCtor
+                      ReexportOrigin
+                      ReexportMiddle
+                      WholeReexport
+                      FieldOrigin
+                      FieldMiddle
+                      CppExportNoDirective
+                      CppExportDirective
+                      QualifiedReexport
+                      CommentedExports
+                      DeprecatedHeader
+                      KeepCtors
+                      PatternClash
+                      CppHeaderOnly
+                      CppImported
+                      CppImporter
+    hs-source-dirs:   .
+    build-depends:    base
+    default-language: Haskell2010
+    default-extensions: TypeOperators
+                        PatternSynonyms
+                        ExplicitNamespaces
+
+executable dummy
+    main-is:          Dummy.hs
+    hs-source-dirs:   dummy
+    build-depends:    base
+    default-language: Haskell2010
