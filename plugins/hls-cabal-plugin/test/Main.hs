@@ -23,6 +23,7 @@ import qualified Data.Text                       as T
 import qualified Data.Text.IO                    as Text
 import           Definition                      (gotoDefinitionTests)
 import           Development.IDE.Test
+import           ExposedModules                  (exposedModulesTests)
 import           Ide.Plugin.Cabal.LicenseSuggest (licenseErrorSuggestion)
 import qualified Ide.Plugin.Cabal.Parse          as Lib
 import           Language.LSP.Protocol.Lens      (HasRange (..))
@@ -60,6 +61,7 @@ unitTests =
         "Unit Tests"
         [ cabalParserUnitTests
         , codeActionUnitTests
+        , exposedModulesTests
         ]
 
 cabalParserUnitTests :: TestTree

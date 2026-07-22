@@ -253,6 +253,7 @@ library hls-cabal-plugin
     Ide.Plugin.Cabal.Completion.Data
     Ide.Plugin.Cabal.Completion.Types
     Ide.Plugin.Cabal.Definition
+    Ide.Plugin.Cabal.ExposedModules
     Ide.Plugin.Cabal.FieldSuggest
     Ide.Plugin.Cabal.Files
     Ide.Plugin.Cabal.OfInterest
@@ -307,11 +308,13 @@ test-suite hls-cabal-plugin-tests
     Completer
     Context
     Definition
+    ExposedModules
     Outline
     Utils
   build-depends:
     , bytestring
     , Cabal-syntax          >= 3.7
+    , directory
     , extra
     , filepath
     , ghcide
