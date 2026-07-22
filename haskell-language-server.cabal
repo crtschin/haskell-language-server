@@ -1837,13 +1837,13 @@ flag export
   manual:      True
 
 common export
-  if flag(export)
+  if flag(export) && flag(cabal)
     build-depends: haskell-language-server:hls-export-plugin
     cpp-options: -Dhls_export
 
 library hls-export-plugin
-  import: defaults, pedantic, warnings
-  if !flag(export)
+  import: defaults, pedantic, warnings, cabal
+  if !flag(export) || !flag(cabal)
     buildable: False
   exposed-modules:
     Ide.Plugin.Export
@@ -1855,22 +1855,33 @@ library hls-export-plugin
   hs-source-dirs:     plugins/hls-export-plugin/src
   default-language:   GHC2021
   build-depends:
+    , aeson
+    , Cabal-syntax          >= 3.7
     , containers
+    , filepath
     , ghc
     , ghc-boot-th
     , ghc-exactprint
     , ghcide          == 2.15.0.0
     , haskell-language-server:hls-exactprint-utils
+    , hiedb           ^>= 0.8.0.0
+    , hls-graph       == 2.15.0.0
     , hls-plugin-api  == 2.15.0.0
     , lens
     , lsp >=2.8
+    , mtl
     , stm
     , text
     , text-rope
+    , transformers
+    , unordered-containers
   default-extensions:
     , DataKinds
     , LambdaCase
+    , NoFieldSelectors
+    , OverloadedRecordDot
     , OverloadedStrings
+    , RecordWildCards
 
 test-suite hls-export-plugin-tests
   import:           defaults, pedantic, test-defaults, warnings

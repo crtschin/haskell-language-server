@@ -6,6 +6,7 @@ import qualified Data.Map.Strict                 as Map
 import           Data.Text                       (Text)
 import           Development.IDE.GHC.Compat
 import           Development.IDE.GHC.Compat.Util
+import qualified GHC.LanguageExtensions.Type     as LangExt
 import           Language.LSP.Protocol.Types
 
 rdrNameFS :: RdrName -> FastString
@@ -82,3 +83,6 @@ mkAction title = CodeAction {..}
     _edit = Nothing
     _command = Nothing
     _data_ = Nothing
+
+isCppModule :: ModSummary -> Bool
+isCppModule = xopt LangExt.Cpp . ms_hspp_opts

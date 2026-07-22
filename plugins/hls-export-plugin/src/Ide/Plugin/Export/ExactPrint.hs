@@ -6,6 +6,7 @@
 module Ide.Plugin.Export.ExactPrint
   ( LExportList
   , mkExportIE
+  , availToLIE
   , appendIE
   , removeMatchingIE
   , addCtorUnderParent
@@ -70,6 +71,23 @@ type LExportList = LocatedLI [LIE GhcPs]
 #else
 type LExportList = LocatedL [LIE GhcPs]
 #endif
+
+availToLIE :: (Name -> Bool) -> AvailInfo -> [LIE GhcPs]
+availToLIE wanted = \case
+  AvailName n -> [nameToIE n]
+  AvailTC parent names pieces
+    | not (null children), all wanted children -> [mkExportIE ExportAll parentRdr]
+    | c : cs <- filter wanted children -> [mkTypeWithIE parentRdr (nameRdr <$> c :| cs)]
+    | otherwise                        -> [mkExportIE ExportFamily parentRdr]
+    where
+      parentRdr = nameRdr parent
+      children = filter (/= parent) names ++ map flSelector pieces
+  AvailFL fl -> [nameToIE (flSelector fl)]
+  where
+    nameToIE n
+      | isDataOcc (nameOccName n) = mkExportIE ExportPattern (nameRdr n)
+      | otherwise                 = mkExportIE ExportName (nameRdr n)
+    nameRdr = mkRdrUnqual . nameOccName
 
 mkExportIE :: ExportFlavor -> RdrName -> LIE GhcPs
 mkExportIE flavor rdr = case flavor of
@@ -170,7 +188,9 @@ mkTypeWithIE parent ctors =
     Nothing
 #endif
   where
-    children = mkIEName c : map (first addComma . mkIEName) cs
+    -- Each comma belongs to the item before it, so the last item has none.
+    children = over _last (first removeTrailingCommaAnn)
+                 (map (first addComma . mkIEName) (c : cs))
     c :| cs = ctors
 
 -- | Map over an @IEThingWith@'s listed constructors, a no-op for any other item.
