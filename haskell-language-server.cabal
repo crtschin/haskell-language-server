@@ -1822,15 +1822,11 @@ library hls-exactprint-utils
   import: defaults, pedantic, warnings
   exposed-modules:
     Development.IDE.GHC.ExactPrint.Annotation
-    Development.IDE.GHC.ExactPrint.CPP
   hs-source-dirs:     hls-exactprint-utils/src
   build-depends:
     , ghc
     , ghc-exactprint
     , ghcide          == 2.15.0.0
-    , lsp             >=2.8
-    , text
-    , text-rope
   default-extensions:
       CPP
 
@@ -1845,7 +1841,7 @@ common export
     cpp-options: -Dhls_export
 
 library hls-export-plugin
-  import: defaults, pedantic, warnings
+  import: defaults, pedantic, warnings, cabal
   if !flag(export)
     buildable: False
   exposed-modules:
@@ -1858,18 +1854,24 @@ library hls-export-plugin
   hs-source-dirs:     plugins/hls-export-plugin/src
   default-language:   GHC2021
   build-depends:
+    , aeson
     , containers
+    , extra
     , ghc
     , ghc-boot-th
     , ghc-exactprint
     , ghcide          == 2.15.0.0
     , haskell-language-server:hls-exactprint-utils
+    , hiedb           ^>= 0.8.0.0
     , hls-plugin-api  == 2.15.0.0
     , lens
     , lsp >=2.8
+    , mtl
     , stm
     , text
     , text-rope
+    , transformers
+    , unordered-containers
   default-extensions:
     , DataKinds
     , LambdaCase

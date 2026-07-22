@@ -2,11 +2,38 @@
 {-# LANGUAGE RecordWildCards #-}
 module Ide.Plugin.Export.Utils where
 
-import qualified Data.Map.Strict                 as Map
-import           Data.Text                       (Text)
+import           Control.Concurrent.STM            (atomically, check, readTVar)
+import           Control.Lens                      (has)
+import           Data.Aeson                        (FromJSON, ToJSON)
+import qualified Data.HashMap.Strict               as HMap
+import qualified Data.Map.Strict                   as Map
+import           Data.Maybe                        (isNothing)
+import           Data.Text                         (Text)
+import           Development.IDE                   (IdeAction, IdeState,
+                                                    ShakeExtras)
+import           Development.IDE.Core.Shake        (HieDbWriter (..),
+                                                    getDiagnostics, hiedbWriter)
 import           Development.IDE.GHC.Compat
+import           Development.IDE.GHC.Compat.Error  (_TcRnUnusedTopBind,
+                                                    msgEnvelopeErrorL)
 import           Development.IDE.GHC.Compat.Util
+import           Development.IDE.Types.Diagnostics
+import           GHC.Generics                      (Generic)
+import           GHC.Types.TypeEnv                 (TypeEnv, lookupTypeEnv)
 import           Language.LSP.Protocol.Types
+#ifdef hls_cabal
+import qualified Ide.Plugin.Cabal.ExposedModules   as Cabal
+#endif
+
+-- | Whether the module is in a library's @exposed-modules@, making its exports
+-- public API.
+isModuleExposed :: NormalizedFilePath -> Text -> IdeAction Bool
+#ifdef hls_cabal
+isModuleExposed = Cabal.isModuleExposed
+#else
+-- Without cabal support compiled in, treat every module as exposed.
+isModuleExposed _ _ = pure True
+#endif
 
 rdrNameFS :: RdrName -> FastString
 rdrNameFS = occNameFS . rdrNameOcc
@@ -82,3 +109,34 @@ mkAction title = CodeAction {..}
     _edit = Nothing
     _command = Nothing
     _data_ = Nothing
+
+-- | The LSP diagnostics for names GHC reports as unused top-level definitions.
+unusedTopBindDiagnostics :: IdeState -> NormalizedFilePath -> IO [Diagnostic]
+unusedTopBindDiagnostics state nfp = do
+  diags <- atomically $ getDiagnostics state
+  pure [fdLspDiagnostic d | d <- diags, fdFilePath d == nfp, isUnusedTopBind d]
+  where
+    isUnusedTopBind =
+      has (fdStructuredMessageL . _SomeStructuredMessage . msgEnvelopeErrorL . _TcRnUnusedTopBind)
+
+-- | A data type's exportable children.
+parentChildren :: TypeEnv -> Name -> Maybe [Name]
+parentChildren typeEnv parent = case lookupTypeEnv typeEnv parent of
+  Just (ATyCon tc)
+    | isNothing (tyConClass_maybe tc) ->
+        Just (map getName (tyConDataCons tc) ++ map flSelector (tyConFieldLabels tc))
+  _ -> Nothing
+
+-- | Block until hiedb has finished indexing every file in @fps@.
+awaitIndexed :: ShakeExtras -> [NormalizedFilePath] -> IO ()
+awaitIndexed extras fps = atomically $ do
+  pending <- readTVar (indexPending (hiedbWriter extras))
+  check (not (any (`HMap.member` pending) fps))
+
+-- | The resolve payload for "Export explicitly". A single mode for now, kept as
+-- a type so the data field round-trips through resolve.
+data ExportResolveData = ExportUsed
+  deriving Generic
+
+instance ToJSON ExportResolveData
+instance FromJSON ExportResolveData
