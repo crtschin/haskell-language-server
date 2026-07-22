@@ -30,6 +30,7 @@ extra-source-files:
   plugins/**/*.cabal
   plugins/**/*.yaml
   plugins/**/*.txt
+  plugins/**/*.h
   plugins/**/*.hs
 
   ghcide-test/data/**/*.cabal
@@ -1879,14 +1880,16 @@ library hls-export-plugin
 
 test-suite hls-export-plugin-tests
   import:           defaults, pedantic, test-defaults, warnings
-  if !flag(export)
+  if !flag(export) || !flag(cabal)
     buildable: False
   type:             exitcode-stdio-1.0
   hs-source-dirs:   plugins/hls-export-plugin/test
   main-is:          Main.hs
   build-depends:
     , filepath
+    , haskell-language-server:hls-cabal-plugin
     , haskell-language-server:hls-export-plugin
+    , hls-plugin-api  == 2.15.0.0
     , hls-test-utils == 2.15.0.0
     , lens
     , lsp-types
