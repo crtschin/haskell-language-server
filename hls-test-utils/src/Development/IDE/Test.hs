@@ -34,7 +34,8 @@ module Development.IDE.Test
   , waitForGC
   , configureCheckProject
   , isReferenceReady
-  , referenceReady) where
+  , referenceReady
+  , waitForIndex) where
 
 import           Control.Applicative.Combinators
 import           Control.Lens                    hiding (List)
@@ -44,6 +45,7 @@ import           Data.Aeson                      (toJSON)
 import qualified Data.Aeson                      as A
 import           Data.Bifunctor                  (second)
 import           Data.Default
+import           Data.List                       (tails)
 import qualified Data.Map.Strict                 as Map
 import           Data.Maybe                      (fromJust)
 import           Data.Proxy
@@ -61,7 +63,8 @@ import           Language.LSP.Protocol.Types
 import           Language.LSP.Test               hiding (message)
 import qualified Language.LSP.Test               as LspTest
 import           System.Directory                (canonicalizePath)
-import           System.FilePath                 (equalFilePath)
+import           System.FilePath                 (equalFilePath, isRelative,
+                                                  joinPath, splitDirectories)
 import           System.Time.Extra
 import           Test.Tasty.HUnit
 
@@ -261,4 +264,13 @@ referenceReady pred = satisfyMaybe $ \case
     , symbolVal p == "ghcide/reference/ready"
     -> Just fp
   _ -> Nothing
+
+-- | Block until ghcide reports that @fp@ has been indexed into hiedb. A relative
+-- @fp@ matches any message path it is a suffix of.
+waitForIndex :: FilePath -> Session ()
+waitForIndex fp = skipManyTill anyMessage $ void $ referenceReady matches
+  where
+    matches fp2
+      | isRelative fp = any (equalFilePath fp . joinPath) (tails (splitDirectories fp2))
+      | otherwise     = equalFilePath fp fp2
 

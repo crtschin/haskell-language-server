@@ -1829,14 +1829,16 @@ library hls-export-plugin
 
 test-suite hls-export-plugin-tests
   import:           defaults, pedantic, test-defaults, warnings
-  if !flag(export)
+  if !flag(export) || !flag(cabal)
     buildable: False
   type:             exitcode-stdio-1.0
   hs-source-dirs:   plugins/hls-export-plugin/test
   main-is:          Main.hs
   build-depends:
     , filepath
+    , haskell-language-server:hls-cabal-plugin
     , haskell-language-server:hls-export-plugin
+    , hls-plugin-api  == 2.14.0.0
     , hls-test-utils == 2.14.0.0
     , lens
     , lsp-types

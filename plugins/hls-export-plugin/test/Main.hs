@@ -1,20 +1,37 @@
+{-# LANGUAGE LambdaCase #-}
 module Main (main) where
 
 import           Control.Lens               ((^.))
 import           Data.Char                  (isSpace)
 import           Data.Either                (rights)
+import           Data.Foldable              (find)
 import           Data.List                  (sort)
 import           Data.Maybe                 (fromMaybe)
 import qualified Data.Text                  as T
-import           Ide.Plugin.Export          (descriptor)
+import           Development.IDE.Test       (waitForIndex)
+import           Ide.Logger                 (Pretty (..), cmapWithPrio)
+import qualified Ide.Plugin.Cabal           as Cabal
+import qualified Ide.Plugin.Export          as Export
 import qualified Language.LSP.Protocol.Lens as L
 import           System.FilePath            ((</>))
 import           Test.Hls
-import           Test.Hls.FileSystem        (copy, directProject,
-                                             mkVirtualFileTree)
+import           Test.Hls.FileSystem        (copy, directCradle, directProject,
+                                             file, mkVirtualFileTree, text)
 
-plugin :: PluginTestDescriptor ()
-plugin = mkPluginTestDescriptor' descriptor "export"
+data TestLog
+  = LogExport Export.Log
+  | LogCabal Cabal.Log
+
+instance Pretty TestLog where
+  pretty = \case
+    LogExport msg -> pretty msg
+    LogCabal msg  -> pretty msg
+
+plugin :: PluginTestDescriptor TestLog
+plugin = mconcat
+  [ mkPluginTestDescriptor (Export.descriptor . cmapWithPrio LogExport) "export"
+  , mkPluginTestDescriptor (Cabal.descriptor . cmapWithPrio LogCabal) "cabal"
+  ]
 
 testDataDir :: FilePath
 testDataDir = "plugins" </> "hls-export-plugin" </> "test" </> "testdata"
@@ -186,6 +203,74 @@ checkCase act name file l c check = testCase name $ runExport file $ \doc -> do
 
 exportCase :: TestName -> FilePath -> UInt -> UInt -> (T.Text -> Assertion) -> TestTree
 exportCase = checkCase exportAndCheck
+
+testDataDirExposed :: FilePath
+testDataDirExposed = "plugins" </> "hls-export-plugin" </> "test" </> "testdata-exposed"
+
+-- | Run with resolve support enabled.
+runExportResolveExposed :: (FilePath -> Session a) -> IO a
+runExportResolveExposed act =
+    runSessionWithTestConfig def
+        { testDirLocation      = Left testDataDirExposed
+        , testPluginDescriptor = plugin
+        , testConfigCaps       = codeActionResolveCaps
+        } act
+
+-- | A project with no enclosing @.cabal@ file.
+runExportNoCabal :: (FilePath -> Session a) -> IO a
+runExportNoCabal act =
+    runSessionWithTestConfig def
+        { testDirLocation = Right $ mkVirtualFileTree testDataDir
+            [ directCradle ["NoCabal"]
+            , file "NoCabal.hs" $ text $ T.unlines
+                [ "module NoCabal where"
+                , ""
+                , "noCabalValue :: Int"
+                , "noCabalValue = 1"
+                ]
+            ]
+        , testPluginDescriptor = plugin
+        , testConfigCaps       = codeActionResolveCaps
+        } act
+
+assertNoneInfix :: T.Text -> [T.Text] -> Assertion
+assertNoneInfix hay needles =
+    not (any (`T.isInfixOf` hay) needles)
+        @? ("Expected none of " <> show needles <> " in:\n" <> T.unpack hay)
+
+titleOffered :: Bool -> T.Text -> TextDocumentIdentifier -> Range -> Session ()
+titleOffered want title doc range = do
+    titles <- codeActionTitles doc range
+    liftIO $ (title `elem` titles) == want
+        @? (T.unpack title <> ": expected offered=" <> show want <> ", saw: " <> show titles)
+
+-- | Resolve and run the titled action at the position.
+runActionWithTitle :: T.Text -> TextDocumentIdentifier -> Range -> Session ()
+runActionWithTitle title doc range = do
+    actions <- rights . map toEither <$> getCodeActions doc range
+    case find ((== title) . (^. L.title)) actions of
+        Just ca -> resolveCodeAction ca >>= executeCodeAction
+        Nothing -> liftIO $ assertFailure $
+            T.unpack title <> " action not offered, saw: " <> show (map (^. L.title) actions)
+
+refineCase :: TestName -> FilePath -> FilePath -> [[T.Text]] -> [T.Text] -> TestTree
+refineCase name consumer target present absent =
+    testCase name $ runExportResolveExposed $ \_dir -> do
+        _       <- openDoc consumer "haskell"
+        target' <- openDoc target "haskell"
+        waitForIndex consumer
+        runActionWithTitle "Export explicitly" target' (rangeAt 0 7)
+        region <- fst . T.breakOn "where" <$> documentContents target'
+        liftIO $ do
+            mapM_ (assertAnyInfix region) present
+            assertNoneInfix region absent
+
+offeredCase :: TestName -> FilePath -> Range -> Bool -> TestTree
+offeredCase name target range want =
+    testCase name $ runExportResolveExposed $ \_dir -> do
+        target' <- openDoc target "haskell"
+        waitForKickDone
+        titleOffered want "Export explicitly" target' range
 
 main :: IO ()
 main = defaultTestRunner $ testGroup "Export"
@@ -453,6 +538,50 @@ main = defaultTestRunner $ testGroup "Export"
             -- A reprint would erase the directives the parser stripped, so removal is
             -- declined whenever the export list holds a CPP directive.
             , noRemoveCase "no remove action under a CPP export list" "CppExportTail.hs" 9 0  -- on `foo`, exported beside an #ifdef block
+            ]
+        ]
+    , testGroup "Export explicitly"
+        [ testGroup "refines to externally-referenced names"
+            [ refineCase "implicit module: exports only externally-referenced names"
+                "UsesMakeExplicitUsed.hs" "MakeExplicitUsed.hs"
+                [["T (..), usedByOther"]] [",)", "usedOnlyInternally", "unusedEntirely"]
+            , refineCase "explicit module: refines list to externally-referenced names"
+                "UsesRefineExports.hs" "RefineExports.hs"
+                [["used, T (..)", "T (..), used"]] [",)", "unused", "UnusedT"]
+            , refineCase "a partial constructor export is not widened to T(..)"
+                "UsesRefinePartialCtor.hs" "RefinePartialCtor.hs"
+                [["T (MkA)", "T(MkA)"]] ["(..)", "MkB", "MkC"]
+            , refineCase "keeps an externally-used re-export, trims an unused local"
+                "UsesReexportFacade.hs" "ReexportFacade.hs"
+                [["originUsed"]] [",)", "localUnused"]
+            , refineCase "a bare re-exported record field is exported by name"
+                "UsesFieldFacade.hs" "FieldFacade.hs"
+                [["fieldUsed"]] ["R (..)", "R(..)"]
+            , refineCase "refine keeps operator and pattern-synonym namespacing"
+                "UsesRefineNamespaces.hs" "RefineNamespaces.hs"
+                [["usedValue"], ["type (:+:) (..)", "type (:+:)(..)"], ["pattern Used"]]
+                ["unusedValue"]
+            , refineCase "explicit module: trims an unused export from a multi-line list"
+                "UsesMultilineRefine.hs" "MultilineRefine.hs"
+                [["used, T (..)", "T (..), used"]] ["unused"]
+            ]
+        , testGroup "offered only where a safe rewrite exists"
+            [ offeredCase "not offered when the list holds a `module M` re-export"
+                "WholeReexport.hs" (rangeAt 0 7) False
+            , offeredCase "no action when cursor is off the module header"
+                "MakeExplicitUsed.hs" (rangeAt 3 0) False
+            , offeredCase "not offered on a module exposed by the library"
+                "ExposedApi.hs" (rangeAt 0 7) False
+            , offeredCase "still offered on a non-exposed module"
+                "InternalApi.hs" (rangeAt 0 7) True
+            , offeredCase "offered on a CPP module whose export list holds no directive"
+                "CppExportNoDirective.hs" (rangeAt 1 7) True
+            , offeredCase "not offered when a directive sits inside the export list"
+                "CppExportDirective.hs" (rangeAt 1 7) False
+            , testCase "not offered when no cabal file can be found" $ runExportNoCabal $ \_dir -> do
+                target <- openDoc "NoCabal.hs" "haskell"
+                waitForKickDone
+                titleOffered False "Export explicitly" target (rangeAt 0 7)
             ]
         ]
     ]
