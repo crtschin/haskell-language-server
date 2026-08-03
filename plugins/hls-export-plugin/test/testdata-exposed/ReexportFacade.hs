@@ -1,6 +1,6 @@
-module ReexportFacade (originUsed, localUnused) where
+module ReexportFacade (originUsed, originUnused, localUnused) where
 
-import           ReexportOrigin (originUsed)
+import           ReexportOrigin (originUnused, originUsed)
 
 localUnused :: Int
 localUnused = 3

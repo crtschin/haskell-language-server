@@ -1837,13 +1837,13 @@ flag export
   manual:      True
 
 common export
-  if flag(export)
+  if flag(export) && flag(cabal)
     build-depends: haskell-language-server:hls-export-plugin
     cpp-options: -Dhls_export
 
 library hls-export-plugin
   import: defaults, pedantic, warnings, cabal
-  if !flag(export)
+  if !flag(export) || !flag(cabal)
     buildable: False
   exposed-modules:
     Ide.Plugin.Export
@@ -1853,7 +1853,6 @@ library hls-export-plugin
     Ide.Plugin.Export.Exports
     Ide.Plugin.Export.Utils
   hs-source-dirs:     plugins/hls-export-plugin/src
-  default-language:   GHC2021
   build-depends:
     , aeson
     , containers
@@ -1875,8 +1874,13 @@ library hls-export-plugin
     , unordered-containers
   default-extensions:
     , DataKinds
+    , DeriveAnyClass
+    , DerivingStrategies
     , LambdaCase
+    , NoFieldSelectors
+    , OverloadedRecordDot
     , OverloadedStrings
+    , RecordWildCards
 
 test-suite hls-export-plugin-tests
   import:           defaults, pedantic, test-defaults, warnings

@@ -6,6 +6,7 @@ module Ide.Plugin.Export.ExactPrint
   , availToLIE
   , appendIE
   , removeMatchingIE
+  , removeAllMatchingIE
   , addCtorUnderParent
   , removeCtorUnderParent
   , printExportList
@@ -69,24 +70,13 @@ type LExportList = LocatedLI [LIE GhcPs]
 type LExportList = LocatedL [LIE GhcPs]
 #endif
 
--- | Render an 'AvailInfo' as export items.
-availToLIE :: (Name -> [Name] -> Bool) -> AvailInfo -> [LIE GhcPs]
-availToLIE isComplete = \case
+-- | Render an 'AvailInfo' as an export item.
+availToLIE :: AvailInfo -> [LIE GhcPs]
+availToLIE = \case
   AvailName n -> [nameToIE n]
   AvailTC parent names pieces
-    -- The parent is in @names@ iff it is itself exported.
-    | parent `elem` names ->
-        case filter (/= parent) names ++ map flSelector pieces of
-          []     -> [mkExportIE ExportFamily (nameRdr parent)] -- T
-          m : ms
-            | isComplete parent (m : ms) ->
-                [mkExportIE ExportAll (nameRdr parent)] -- T(..)
-            | otherwise ->
-                [mkTypeWithIE (nameRdr parent) (fmap nameRdr (m :| ms))] -- T(a, b)
-    -- When only members are exported, the parent may not be in scope, so each
-    -- member is exported by its own name instead.
-    | otherwise -> map nameToIE names ++ map (nameToIE . flSelector) pieces
-  -- TODO: a bare selector is not a valid export under NoFieldSelectors.
+    | all (== parent) names && null pieces -> [mkExportIE ExportFamily (nameRdr parent)] -- T
+    | otherwise                            -> [mkExportIE ExportAll (nameRdr parent)]    -- T(..)
   AvailFL fl -> [nameToIE (flSelector fl)]
   where
     nameToIE n
@@ -94,12 +84,14 @@ availToLIE isComplete = \case
       | otherwise                 = mkExportIE ExportName (nameRdr n)
     nameRdr = mkRdrUnqual . nameOccName
 
+data WrapKind = WrapPlain | WrapPattern | WrapType
+
 mkExportIE :: ExportFlavor -> RdrName -> LIE GhcPs
 mkExportIE flavor rdr = case flavor of
   ExportName    -> ieVar (mkWrappedName WrapPlain rdr)
   ExportPattern -> ieVar (mkWrappedName WrapPattern rdr)
-  ExportFamily  -> mkTypeAbsIE' (mkWrappedName keywordWrap rdr)
-  ExportAll     -> mkTypeAllIE' (mkWrappedName keywordWrap rdr)
+  ExportFamily  -> mkTypeAbsIE (mkWrappedName keywordWrap rdr)
+  ExportAll     -> mkTypeAllIE (mkWrappedName keywordWrap rdr)
   where
     keywordWrap
       | isSymOcc (rdrNameOcc rdr) = WrapType
@@ -118,8 +110,8 @@ ieVar w =
     Nothing
 #endif
 
-mkTypeAbsIE' :: LIEWrappedName GhcPs -> LIE GhcPs
-mkTypeAbsIE' w =
+mkTypeAbsIE :: LIEWrappedName GhcPs -> LIE GhcPs
+mkTypeAbsIE w =
   reLocA $ L noSrcSpan $ IEThingAbs
 #if MIN_VERSION_ghc(9,11,0)
     Nothing
@@ -133,8 +125,8 @@ mkTypeAbsIE' w =
     Nothing
 #endif
 
-mkTypeAllIE' :: LIEWrappedName GhcPs -> LIE GhcPs
-mkTypeAllIE' w =
+mkTypeAllIE :: LIEWrappedName GhcPs -> LIE GhcPs
+mkTypeAllIE w =
   reLocA $ L noSrcSpan $ IEThingAll
 #if MIN_VERSION_ghc(9,11,0)
     (Nothing, (EpTok (epl 1), EpTok (epl 0), EpTok (epl 0)))
@@ -193,19 +185,11 @@ mkTypeWithIE parent ctors =
     Nothing
 #endif
   where
-    children = mkIEName c : map (first addComma . mkIEName) cs
+    -- A separator comma is a trailing annotation, so every child except the
+    -- last carries one.
+    children = over _last (first removeTrailingCommaAnn)
+                 (map (first addComma . mkIEName) (c : cs))
     c :| cs = ctors
-
--- | Map over an @IEThingWith@'s listed constructors, a no-op for any other item.
-overThingWithChildren :: ([LIEWrappedName GhcPs] -> [LIEWrappedName GhcPs]) -> IE GhcPs -> IE GhcPs
-#if MIN_VERSION_ghc(9,9,0)
-overThingWithChildren f (IEThingWith x n w cs docs) = IEThingWith x n w (f cs) docs
-#else
-overThingWithChildren f (IEThingWith x n w cs)      = IEThingWith x n w (f cs)
-#endif
-overThingWithChildren _ ie                          = ie
-
-data WrapKind = WrapPlain | WrapPattern | WrapType
 
 mkIEName :: RdrName -> LIEWrappedName GhcPs
 mkIEName = mkWrappedName WrapPlain
@@ -249,8 +233,8 @@ separatorComma :: [LIE GhcPs] -> Maybe TrailingAnn
 separatorComma items =
   listToMaybe [c | L ann _ <- items, c <- trailingAnns ann, isCommaAnn c]
 
--- | Drop the first element matching @p@, preserving the list's layout.
--- 'Nothing' if nothing matches, @Just []@ if it was the sole element.
+-- | Drop the first element matching @p@ and keep the list's layout. 'Nothing'
+-- if nothing matches, @Just []@ if it was the sole element.
 removeListItem
   :: (LocatedAn AnnListItem a -> Bool)
   -> [LocatedAn AnnListItem a]
@@ -265,6 +249,15 @@ removeListItem p items = case break p items of
 
 removeMatchingIE :: (IE GhcPs -> Bool) -> LExportList -> Maybe LExportList
 removeMatchingIE p (L l items) = L l <$> removeListItem (p . unLoc) items
+
+-- | Drop every entry matching @p@. 'Nothing' if none match.
+--
+-- Each pass hands on the head's entry delta and strips the new last element's
+-- comma, so repeating the single removal keeps the layout right.
+removeAllMatchingIE :: (IE GhcPs -> Bool) -> LExportList -> Maybe LExportList
+removeAllMatchingIE p = fmap go . removeMatchingIE p
+  where
+    go l = maybe l go (removeMatchingIE p l)
 
 -- | 'Nothing' iff @ctor@ is already exported (via @T(..)@ or @T(...,ctor,...)@).
 addCtorUnderParent ::
@@ -289,10 +282,13 @@ addCtorUnderParent parent ctor lst@(L l items) =
 -- | Append @ctor@ to an @IEThingWith@'s children, reusing the sibling separator
 -- comma. No-op for other items.
 addCtorChildren :: RdrName -> IE GhcPs -> IE GhcPs
-addCtorChildren ctor = overThingWithChildren $ \cs ->
-  let hasSibling = not (null cs)
-      newChild = setEntryDP (mkIEName ctor) (SameLine (if hasSibling then 1 else 0))
-   in (if hasSibling then map (first ensureTrailingComma) cs else cs) ++ [newChild]
+addCtorChildren ctor ie = maybe ie grow (ieThingWithParts ie)
+  where
+    grow tw =
+      let cs = tw.children
+          hasSibling = not (null cs)
+          newChild = setEntryDP (mkIEName ctor) (SameLine (if hasSibling then 1 else 0))
+       in tw.rebuild ((if hasSibling then map (first ensureTrailingComma) cs else cs) ++ [newChild])
 
 -- | Remove @ctor@ from the export entries listing it under @parent@, or
 -- 'Nothing' if none does. Removing the last child downgrades @T(ctor)@ to @T@.
@@ -314,22 +310,20 @@ removeCtorUnderParent parent ctor (L l items)
 
     dropCtor changed item@(L itemLoc ie)
       | parentNameIs parentFS ie
-      , Just children <- ieThingWithChildren ie
-      , Just kept <- removeListItem isCtor children
-      = (True, L itemLoc (rebuild ie kept))
+      , Just tw <- ieThingWithParts ie
+      , Just kept <- removeListItem isCtor tw.children
+      = (True, L itemLoc (rebuild tw kept))
       | otherwise = (changed, item)
 
-    -- An empty child list means ctor was the only child, so collapse T(ctor)
-    -- to a bare T.
-    rebuild ie []   = downgradeToAbs ie
-    rebuild ie kept = overThingWithChildren (const kept) ie
+    -- An empty child list means ctor was the only child, so collapse T(ctor) to
+    -- a bare T. Reusing the head keeps type and operator wrapping, so
+    -- `type (:<)(C)` becomes `type (:<)`.
+    rebuild tw []   = unLoc (mkTypeAbsIE (setEntryDP tw.head (SameLine 0)))
+    rebuild tw kept = tw.rebuild kept
 
-    -- Reuse the head so type/operator wrapping survives, e.g. `type (:<)(C)`
-    -- becomes `type (:<)`.
-    downgradeToAbs ie = case ieThingWithHead ie of
-      Just n  -> unLoc (mkTypeAbsIE' (setEntryDP n (SameLine 0)))
-      Nothing -> ie
-
+-- One polymorphic helper cannot serve both printers. 'setEntryDP' carries a
+-- @Default t@ constraint in ghc-exactprint 1.8 (GHC 9.6) and none from 1.10 on,
+-- and -Wredundant-constraints rejects carrying it unconditionally.
 printExportList :: LExportList -> Text
 printExportList l = T.pack (exactPrint (setEntryDP l (SameLine 0)))
 
@@ -353,10 +347,11 @@ data CtorEdit
   | UpgradeBare      -- ^ replace the bare @T@ entry with @T(ctor)@
   | AddChild         -- ^ add @ctor@ to the existing @T(...)@ entry
 
--- | Decide how @ctor@ should be added under @parent@, classifying the first
--- matching export item by its constructor-carrying shape.
+-- | Decide how to add @ctor@ under @parent@. We choose the first that matches.
 ctorExportEdit :: RdrName -> RdrName -> [LIE GhcPs] -> CtorEdit
-ctorExportEdit parent ctor = go
+ctorExportEdit parent ctor items
+  | any (parentNameIs ctorFS . unLoc) items = AlreadyExported
+  | otherwise                               = go items
   where
     parentFS = rdrNameFS parent
     ctorFS = rdrNameFS ctor
@@ -365,7 +360,9 @@ ctorExportEdit parent ctor = go
       | parentNameIs parentFS ie = case ie of
           IEThingAll {} -> AlreadyExported
           IEThingAbs {} -> UpgradeBare
-          _ | Just cs <- ieThingWithChildren ie ->
-                if any ((== ctorFS) . lieWrappedNameFS) cs then AlreadyExported else AddChild
+          _ | Just tw <- ieThingWithParts ie ->
+                if any ((== ctorFS) . lieWrappedNameFS) tw.children
+                  then AlreadyExported
+                  else AddChild
             | otherwise -> go rest
       | otherwise = go rest

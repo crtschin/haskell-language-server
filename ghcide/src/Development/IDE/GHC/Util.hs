@@ -7,7 +7,7 @@ module Development.IDE.GHC.Util(
     modifyDynFlags,
     evalGhcEnv,
     -- * GHC wrappers
-    printRdrName,
+    printRdrName, printRdrText,
     Development.IDE.GHC.Util.printName,
     ParseResult(..), runParser,
     lookupPackageConfig,
@@ -113,10 +113,14 @@ bytestringToStringBuffer :: ByteString -> StringBuffer
 bytestringToStringBuffer (PS buf cur len) = StringBuffer{..}
 
 -- | Pretty print a 'RdrName' wrapping operators in parens
-printRdrName :: RdrName -> String
-printRdrName name = T.unpack $ printOutputable $ parenSymOcc rn (ppr rn)
+printRdrText :: RdrName -> T.Text
+printRdrText name = printOutputable $ parenSymOcc rn (ppr rn)
   where
     rn = rdrNameOcc name
+
+-- | Pretty print a 'RdrName' wrapping operators in parens
+printRdrName :: RdrName -> String
+printRdrName = T.unpack . printRdrText
 
 -- | Pretty print a 'Name' wrapping operators in parens
 printName :: Name -> String
