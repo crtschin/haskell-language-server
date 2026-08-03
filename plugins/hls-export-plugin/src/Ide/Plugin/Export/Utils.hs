@@ -2,38 +2,51 @@
 {-# LANGUAGE RecordWildCards #-}
 module Ide.Plugin.Export.Utils where
 
-import           Control.Concurrent.STM            (atomically, check, readTVar)
-import           Control.Lens                      (has)
-import           Data.Aeson                        (FromJSON, ToJSON)
-import qualified Data.HashMap.Strict               as HMap
-import qualified Data.Map.Strict                   as Map
-import           Data.Maybe                        (isNothing)
-import           Data.Text                         (Text)
-import           Development.IDE                   (IdeAction, IdeState,
-                                                    ShakeExtras)
-import           Development.IDE.Core.Shake        (HieDbWriter (..),
-                                                    getDiagnostics, hiedbWriter)
+import           Control.Concurrent.STM                       (atomically)
+import qualified Control.Exception                            as Exception
+import           Control.Lens                                 (has)
+import           Data.Aeson                                   (FromJSON, ToJSON)
+import qualified Data.Map.Strict                              as Map
+import           Data.Maybe                                   (isNothing)
+import           Data.Text                                    (Text)
+import           Development.IDE                              (IdeAction,
+                                                               IdeState)
+import           Development.IDE.Core.Shake                   (getDiagnostics)
 import           Development.IDE.GHC.Compat
-import           Development.IDE.GHC.Compat.Error  (_TcRnUnusedTopBind,
-                                                    msgEnvelopeErrorL)
+import           Development.IDE.GHC.Compat.Error             (_TcRnUnusedTopBind,
+                                                               msgEnvelopeErrorL)
 import           Development.IDE.GHC.Compat.Util
+import           Development.IDE.Import.DependencyInformation (DependencyInformation (..),
+                                                               pathToId)
 import           Development.IDE.Types.Diagnostics
-import           GHC.Generics                      (Generic)
-import           GHC.Types.TypeEnv                 (TypeEnv, lookupTypeEnv)
+import           Development.IDE.Types.Shake                  (WithHieDb)
+import           GHC.Generics                                 (Generic)
+import qualified HieDb
 import           Language.LSP.Protocol.Types
 #ifdef hls_cabal
-import qualified Ide.Plugin.Cabal.ExposedModules   as Cabal
+import qualified Ide.Plugin.Cabal.ExposedModules              as Cabal
 #endif
 
--- | Whether the module is in a library's @exposed-modules@, making its exports
--- public API.
-isModuleExposed :: NormalizedFilePath -> Text -> IdeAction Bool
+-- | Whether the module is public API, and every file the cabal file says gets
+-- built. One lookup, because the provider needs both on the same request.
+exposureCheck :: NormalizedFilePath -> Text -> IdeAction (Bool, [NormalizedFilePath])
 #ifdef hls_cabal
-isModuleExposed = Cabal.isModuleExposed
+exposureCheck = Cabal.exposureCheck
 #else
--- Without cabal support compiled in, treat every module as exposed.
-isModuleExposed _ _ = pure True
+-- Without cabal support, treat every module as exposed, which withholds the
+-- action rather than offering it on what may be a published interface.
+exposureCheck _ _ = pure (True, [])
 #endif
+
+isModuleExposed :: NormalizedFilePath -> Text -> IdeAction Bool
+isModuleExposed nfp modName = fst <$> exposureCheck nfp modName
+
+-- | Which of @declared@ the session has never been told about, meaning a
+-- component nobody has loaded.
+--
+-- See Note [Every consumer must be visible].
+unloadedOf :: DependencyInformation -> [NormalizedFilePath] -> [NormalizedFilePath]
+unloadedOf depInfo = filter (isNothing . pathToId (depPathIdMap depInfo))
 
 rdrNameFS :: RdrName -> FastString
 rdrNameFS = occNameFS . rdrNameOcc
@@ -119,19 +132,18 @@ unusedTopBindDiagnostics state nfp = do
     isUnusedTopBind =
       has (fdStructuredMessageL . _SomeStructuredMessage . msgEnvelopeErrorL . _TcRnUnusedTopBind)
 
--- | A data type's exportable children.
-parentChildren :: TypeEnv -> Name -> Maybe [Name]
-parentChildren typeEnv parent = case lookupTypeEnv typeEnv parent of
-  Just (ATyCon tc)
-    | isNothing (tyConClass_maybe tc) ->
-        Just (map getName (tyConDataCons tc) ++ map flSelector (tyConFieldLabels tc))
-  _ -> Nothing
-
--- | Block until hiedb has finished indexing every file in @fps@.
-awaitIndexed :: ShakeExtras -> [NormalizedFilePath] -> IO ()
-awaitIndexed extras fps = atomically $ do
-  pending <- readTVar (indexPending (hiedbWriter extras))
-  check (not (any (`HMap.member` pending) fps))
+-- | Whether hiedb's record for @nfp@ agrees with the @.hie@ file it points at.
+-- Says nothing about whether that @.hie@ matches current source. It catches
+-- "never indexed" and "index out of step with the interface".
+isIndexCurrent :: WithHieDb -> NormalizedFilePath -> IO Bool
+isIndexCurrent withDb nfp = do
+  mrow <- withDb $ \db -> HieDb.lookupHieFileFromSource db (fromNormalizedFilePath nfp)
+  case mrow of
+    Nothing -> pure False
+    Just row -> do
+      hashed <- Exception.try @Exception.IOException
+        (getFileHash (HieDb.hieModuleHieFile row))
+      pure $ either (const False) (== HieDb.modInfoHash (HieDb.hieModInfo row)) hashed
 
 -- | The resolve payload for "Export explicitly". A single mode for now, kept as
 -- a type so the data field round-trips through resolve.

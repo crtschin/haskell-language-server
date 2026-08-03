@@ -1,0 +1,17 @@
+cabal-version:      2.4
+name:               multi-fixture
+version:            0.1.0.0
+
+library
+    exposed-modules:  PublicApi
+    other-modules:    Lib
+    hs-source-dirs:   src
+    build-depends:    base
+    default-language: Haskell2010
+
+test-suite spec
+    type:             exitcode-stdio-1.0
+    main-is:          Spec.hs
+    hs-source-dirs:   test
+    build-depends:    base, multi-fixture
+    default-language: Haskell2010

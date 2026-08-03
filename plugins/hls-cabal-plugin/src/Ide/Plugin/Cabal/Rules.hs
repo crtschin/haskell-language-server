@@ -25,6 +25,7 @@ import           Ide.Plugin.Cabal.Completion.Types (ParseCabalCommonSections (Pa
                                                     ParseCabalFields (..),
                                                     ParseCabalFile (..))
 import qualified Ide.Plugin.Cabal.Diagnostics      as Diagnostics
+import qualified Ide.Plugin.Cabal.ExposedModules   as ExposedModules
 import qualified Ide.Plugin.Cabal.OfInterest       as OfInterest
 import           Ide.Plugin.Cabal.Orphans          ()
 import qualified Ide.Plugin.Cabal.Parse            as Parse
@@ -35,6 +36,7 @@ data Log
   = LogModificationTime NormalizedFilePath FileVersion
   | LogShake Shake.Log
   | LogOfInterest OfInterest.Log
+  | LogExposedModules ExposedModules.Log
   | LogDocSaved Uri
   deriving (Show)
 
@@ -42,6 +44,7 @@ instance Pretty Log where
   pretty = \case
     LogShake log' -> pretty log'
     LogOfInterest log' -> pretty log'
+    LogExposedModules log' -> pretty log'
     LogModificationTime nfp modTime ->
       "Modified:" <+> pretty (fromNormalizedFilePath nfp) <+> pretty (show modTime)
     LogDocSaved uri ->
@@ -51,6 +54,7 @@ cabalRules :: Recorder (WithPriority Log) -> PluginId -> Rules ()
 cabalRules recorder plId = do
   -- Make sure we initialise the cabal files-of-interest.
   OfInterest.ofInterestRules (cmapWithPrio LogOfInterest recorder)
+  ExposedModules.exposedModulesRules (cmapWithPrio LogExposedModules recorder)
   -- Rule to produce diagnostics for cabal files.
   define (cmapWithPrio LogShake recorder) $ \ParseCabalFields file -> do
     config <- getPluginConfigAction plId

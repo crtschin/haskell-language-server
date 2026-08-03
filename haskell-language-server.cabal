@@ -1821,7 +1821,6 @@ library hls-export-plugin
     , text
     , text-rope
     , transformers
-    , unordered-containers
   default-extensions:
     , DataKinds
     , LambdaCase

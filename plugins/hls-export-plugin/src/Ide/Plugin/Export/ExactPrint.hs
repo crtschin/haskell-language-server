@@ -6,6 +6,7 @@ module Ide.Plugin.Export.ExactPrint
   , availToLIE
   , appendIE
   , removeMatchingIE
+  , removeAllMatchingIE
   , addCtorUnderParent
   , removeCtorUnderParent
   , printExportList
@@ -69,20 +70,17 @@ type LExportList = LocatedLI [LIE GhcPs]
 type LExportList = LocatedL [LIE GhcPs]
 #endif
 
--- | Render an 'AvailInfo' as export items.
-availToLIE :: (Name -> [Name] -> Bool) -> AvailInfo -> [LIE GhcPs]
-availToLIE isComplete = \case
+-- | Render an 'AvailInfo' as export items. One avail is one entry, so a type
+-- is exported with all of its children or not at all.
+availToLIE :: AvailInfo -> [LIE GhcPs]
+availToLIE = \case
   AvailName n -> [nameToIE n]
   AvailTC parent names pieces
     -- The parent is in @names@ iff it is itself exported.
     | parent `elem` names ->
         case filter (/= parent) names ++ map flSelector pieces of
-          []     -> [mkExportIE ExportFamily (nameRdr parent)] -- T
-          m : ms
-            | isComplete parent (m : ms) ->
-                [mkExportIE ExportAll (nameRdr parent)] -- T(..)
-            | otherwise ->
-                [mkTypeWithIE (nameRdr parent) (fmap nameRdr (m :| ms))] -- T(a, b)
+          [] -> [mkExportIE ExportFamily (nameRdr parent)] -- T
+          _  -> [mkExportIE ExportAll (nameRdr parent)]    -- T(..)
     -- When only members are exported, the parent may not be in scope, so each
     -- member is exported by its own name instead.
     | otherwise -> map nameToIE names ++ map (nameToIE . flSelector) pieces
@@ -193,7 +191,10 @@ mkTypeWithIE parent ctors =
     Nothing
 #endif
   where
-    children = mkIEName c : map (first addComma . mkIEName) cs
+    -- Separator commas are trailing annotations, so every child but the last
+    -- carries one.
+    children = over _last (first removeTrailingCommaAnn)
+                 (map (first addComma . mkIEName) (c : cs))
     c :| cs = ctors
 
 -- | Map over an @IEThingWith@'s listed constructors, a no-op for any other item.
@@ -265,6 +266,14 @@ removeListItem p items = case break p items of
 
 removeMatchingIE :: (IE GhcPs -> Bool) -> LExportList -> Maybe LExportList
 removeMatchingIE p (L l items) = L l <$> removeListItem (p . unLoc) items
+
+-- | Drop every entry matching @p@, not just the first. 'Nothing' if none match.
+-- Repeating the single removal is what keeps the layout right, since each pass
+-- hands on the head's entry delta and strips the new last element's comma.
+removeAllMatchingIE :: (IE GhcPs -> Bool) -> LExportList -> Maybe LExportList
+removeAllMatchingIE p = fmap go . removeMatchingIE p
+  where
+    go l = maybe l go (removeMatchingIE p l)
 
 -- | 'Nothing' iff @ctor@ is already exported (via @T(..)@ or @T(...,ctor,...)@).
 addCtorUnderParent ::

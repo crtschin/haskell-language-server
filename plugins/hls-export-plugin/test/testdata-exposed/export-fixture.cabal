@@ -24,6 +24,12 @@ library
                       UsesFieldFacade
                       CppExportNoDirective
                       CppExportDirective
+                      QualifiedReexport
+                      UsesQualifiedReexport
+                      CommentedExports
+                      UsesCommentedExports
+                      DeprecatedHeader
+                      UsesDeprecatedHeader
     hs-source-dirs:   .
     build-depends:    base
     default-language: Haskell2010

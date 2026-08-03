@@ -27,6 +27,8 @@ instance Pretty TestLog where
     LogExport msg -> pretty msg
     LogCabal msg  -> pretty msg
 
+-- | The exposure check reads 'ParseCabalFile', which the cabal plugin's own
+-- descriptor registers, so both have to be loaded.
 plugin :: PluginTestDescriptor TestLog
 plugin = mconcat
   [ mkPluginTestDescriptor (Export.descriptor . cmapWithPrio LogExport) "export"
@@ -60,11 +62,8 @@ codeActionTitles doc range =
         <$> getCodeActions doc range
 
 executeByPrefix :: T.Text -> TextDocumentIdentifier -> Range -> Session ()
-executeByPrefix prefix doc range = do
-    actions <- rights . map toEither <$> getCodeActions doc range
-    case filter (\ca -> prefix `T.isPrefixOf` (ca ^. L.title)) actions of
-        (ca:_) -> executeCodeAction ca
-        []     -> liftIO $ assertFailure (T.unpack prefix <> "...` action not offered")
+executeByPrefix prefix doc range =
+    findAction (prefix `T.isPrefixOf`) doc range >>= executeCodeAction
 
 executeExportAction, executeRemoveAction :: TextDocumentIdentifier -> Range -> Session ()
 executeExportAction = executeByPrefix "Export `"
@@ -204,73 +203,67 @@ checkCase act name file l c check = testCase name $ runExport file $ \doc -> do
 exportCase :: TestName -> FilePath -> UInt -> UInt -> (T.Text -> Assertion) -> TestTree
 exportCase = checkCase exportAndCheck
 
-testDataDirExposed :: FilePath
-testDataDirExposed = "plugins" </> "hls-export-plugin" </> "test" </> "testdata-exposed"
-
--- | Run with resolve support enabled.
-runExportResolveExposed :: (FilePath -> Session a) -> IO a
-runExportResolveExposed act =
+-- | A whole fixture project, with resolve support enabled.
+runProject :: FilePath -> (FilePath -> Session a) -> IO a
+runProject dir act =
     runSessionWithTestConfig def
-        { testDirLocation      = Left testDataDirExposed
+        { testDirLocation      = Left ("plugins" </> "hls-export-plugin" </> "test" </> dir)
         , testPluginDescriptor = plugin
         , testConfigCaps       = codeActionResolveCaps
         } act
 
--- | A project with no enclosing @.cabal@ file.
-runExportNoCabal :: (FilePath -> Session a) -> IO a
-runExportNoCabal act =
-    runSessionWithTestConfig def
-        { testDirLocation = Right $ mkVirtualFileTree testDataDir
-            [ directCradle ["NoCabal"]
-            , file "NoCabal.hs" $ text $ T.unlines
-                [ "module NoCabal where"
-                , ""
-                , "noCabalValue :: Int"
-                , "noCabalValue = 1"
-                ]
-            ]
-        , testPluginDescriptor = plugin
-        , testConfigCaps       = codeActionResolveCaps
-        } act
+-- | A single-library project whose modules reference each other.
+runExposed :: (FilePath -> Session a) -> IO a
+runExposed = runProject "testdata-exposed"
+
+-- | A package whose test-suite is a separate component, so opening a library
+-- module leaves the test-suite's @Spec.hs@ unloaded.
+runMulti :: (FilePath -> Session a) -> IO a
+runMulti = runProject "testdata-multi"
 
 assertNoneInfix :: T.Text -> [T.Text] -> Assertion
 assertNoneInfix hay needles =
     not (any (`T.isInfixOf` hay) needles)
         @? ("Expected none of " <> show needles <> " in:\n" <> T.unpack hay)
 
-titleOffered :: Bool -> T.Text -> TextDocumentIdentifier -> Range -> Session ()
-titleOffered want title doc range = do
+explicitly :: T.Text
+explicitly = "Export explicitly"
+
+titleOffered :: Bool -> TextDocumentIdentifier -> Range -> Session ()
+titleOffered want doc range = do
     titles <- codeActionTitles doc range
-    liftIO $ (title `elem` titles) == want
-        @? (T.unpack title <> ": expected offered=" <> show want <> ", saw: " <> show titles)
+    liftIO $ (explicitly `elem` titles) == want
+        @? (T.unpack explicitly <> ": expected offered=" <> show want <> ", saw: " <> show titles)
 
--- | Resolve and run the titled action at the position.
-runActionWithTitle :: T.Text -> TextDocumentIdentifier -> Range -> Session ()
-runActionWithTitle title doc range = do
+-- | The first offered action whose title matches, or a failure naming what was
+-- on offer instead.
+findAction :: (T.Text -> Bool) -> TextDocumentIdentifier -> Range -> Session CodeAction
+findAction matches doc range = do
     actions <- rights . map toEither <$> getCodeActions doc range
-    case find ((== title) . (^. L.title)) actions of
-        Just ca -> resolveCodeAction ca >>= executeCodeAction
+    case find (matches . (^. L.title)) actions of
+        Just ca -> pure ca
         Nothing -> liftIO $ assertFailure $
-            T.unpack title <> " action not offered, saw: " <> show (map (^. L.title) actions)
+            "no matching code action, saw: " <> show (map (^. L.title) actions)
 
-refineCase :: TestName -> FilePath -> FilePath -> [[T.Text]] -> [T.Text] -> TestTree
+refineCase :: TestName -> FilePath -> FilePath -> [T.Text] -> [T.Text] -> TestTree
 refineCase name consumer target present absent =
-    testCase name $ runExportResolveExposed $ \_dir -> do
+    testCase name $ runExposed $ \_dir -> do
         _       <- openDoc consumer "haskell"
         target' <- openDoc target "haskell"
         waitForIndex consumer
-        runActionWithTitle "Export explicitly" target' (rangeAt 0 7)
+        ca <- findAction (== explicitly) target' (rangeAt 0 7)
+        resolveCodeAction ca >>= executeCodeAction
         region <- fst . T.breakOn "where" <$> documentContents target'
         liftIO $ do
-            mapM_ (assertAnyInfix region) present
+            assertContainsAll region present
             assertNoneInfix region absent
 
 offeredCase :: TestName -> FilePath -> Range -> Bool -> TestTree
 offeredCase name target range want =
-    testCase name $ runExportResolveExposed $ \_dir -> do
+    testCase name $ runExposed $ \_dir -> do
         target' <- openDoc target "haskell"
         waitForKickDone
-        titleOffered want "Export explicitly" target' range
+        titleOffered want target' range
 
 main :: IO ()
 main = defaultTestRunner $ testGroup "Export"
@@ -544,26 +537,36 @@ main = defaultTestRunner $ testGroup "Export"
         [ testGroup "refines to externally-referenced names"
             [ refineCase "implicit module: exports only externally-referenced names"
                 "UsesMakeExplicitUsed.hs" "MakeExplicitUsed.hs"
-                [["T (..), usedByOther"]] [",)", "usedOnlyInternally", "unusedEntirely"]
+                ["T (..), usedByOther"] [",)", "usedOnlyInternally", "unusedEntirely"]
             , refineCase "explicit module: refines list to externally-referenced names"
                 "UsesRefineExports.hs" "RefineExports.hs"
-                [["used, T (..)", "T (..), used"]] [",)", "unused", "UnusedT"]
+                ["used, T (..)"] ["unused", "UnusedT"]
             , refineCase "a partial constructor export is not widened to T(..)"
                 "UsesRefinePartialCtor.hs" "RefinePartialCtor.hs"
-                [["T (MkA)", "T(MkA)"]] ["(..)", "MkB", "MkC"]
-            , refineCase "keeps an externally-used re-export, trims an unused local"
+                ["T (MkA)"] ["unusedHere", "(..)", "MkB", "MkC"]
+            , -- See Note [Definition sites count as references].
+              refineCase "trims an unused re-export as well as an unused local"
                 "UsesReexportFacade.hs" "ReexportFacade.hs"
-                [["originUsed"]] [",)", "localUnused"]
+                ["originUsed"] ["originUnused", "localUnused"]
             , refineCase "a bare re-exported record field is exported by name"
                 "UsesFieldFacade.hs" "FieldFacade.hs"
-                [["fieldUsed"]] ["R (..)", "R(..)"]
+                ["fieldUsed"] ["localUnused", "R (..)", "R(..)"]
             , refineCase "refine keeps operator and pattern-synonym namespacing"
                 "UsesRefineNamespaces.hs" "RefineNamespaces.hs"
-                [["usedValue"], ["type (:+:) (..)", "type (:+:)(..)"], ["pattern Used"]]
+                ["usedValue", "type (:+:)", "pattern Used"]
                 ["unusedValue"]
-            , refineCase "explicit module: trims an unused export from a multi-line list"
+            , refineCase "explicit module: keeps a multi-line list's layout when trimming"
                 "UsesMultilineRefine.hs" "MultilineRefine.hs"
-                [["used, T (..)", "T (..), used"]] ["unused"]
+                ["( used\n  , T (..)\n  )"] ["unused"]
+            , refineCase "a qualified re-export keeps its qualifier"
+                "UsesQualifiedReexport.hs" "QualifiedReexport.hs"
+                ["ReexportOrigin.originUsed"] ["localUnused"]
+            , refineCase "haddock section headers in the export list survive"
+                "UsesCommentedExports.hs" "CommentedExports.hs"
+                ["-- * Core"] ["unused"]
+            , refineCase "a generated list goes after a module warning pragma"
+                "UsesDeprecatedHeader.hs" "DeprecatedHeader.hs"
+                ["{-# DEPRECATED \"old\" #-} (usedHere)"] ["notUsed"]
             ]
         , testGroup "offered only where a safe rewrite exists"
             [ offeredCase "not offered when the list holds a `module M` re-export"
@@ -578,10 +581,29 @@ main = defaultTestRunner $ testGroup "Export"
                 "CppExportNoDirective.hs" (rangeAt 1 7) True
             , offeredCase "not offered when a directive sits inside the export list"
                 "CppExportDirective.hs" (rangeAt 1 7) False
-            , testCase "not offered when no cabal file can be found" $ runExportNoCabal $ \_dir -> do
+            , testCase "not offered when no cabal file can be found" $
+                runSessionWithTestConfig def
+                    { testDirLocation = Right $ mkVirtualFileTree testDataDir
+                        [ directCradle ["NoCabal"]
+                        , file "NoCabal.hs" $ text $ T.unlines
+                            [ "module NoCabal where"
+                            , ""
+                            , "noCabalValue :: Int"
+                            , "noCabalValue = 1"
+                            ]
+                        ]
+                    , testPluginDescriptor = plugin
+                    , testConfigCaps       = codeActionResolveCaps
+                    } $ \_dir -> do
                 target <- openDoc "NoCabal.hs" "haskell"
                 waitForKickDone
-                titleOffered False "Export explicitly" target (rangeAt 0 7)
+                titleOffered False target (rangeAt 0 7)
+            , -- See Note [Every consumer must be visible].
+              testCase "not offered while a sibling component is unloaded" $
+                runMulti $ \_dir -> do
+                    target <- openDoc ("src" </> "Lib.hs") "haskell"
+                    waitForKickDone
+                    titleOffered False target (rangeAt 0 7)
             ]
         ]
     ]

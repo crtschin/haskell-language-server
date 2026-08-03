@@ -2,7 +2,8 @@ module Ide.Plugin.Export (descriptor, Log) where
 
 import           Control.Applicative                          ((<|>))
 import           Control.Lens
-import           Control.Monad                                (filterM, when)
+import           Control.Monad                                (filterM, unless,
+                                                               when)
 import           Control.Monad.Error.Class                    (throwError)
 import           Control.Monad.IO.Class                       (liftIO)
 import           Control.Monad.Trans.Class                    (lift)
@@ -35,28 +36,28 @@ import           Language.LSP.Protocol.Message                (Method (..),
                                                                SMethod (..))
 import           Language.LSP.Protocol.Types
 
-data Log = forall a. Pretty a => LogResolve a
+data Log
+  = -- | Any sub-component's log, such as the resolve helper's.
+    forall a. Pretty a => LogSub a
 
 instance Pretty Log where
-  pretty (LogResolve msg) = pretty msg
+  pretty (LogSub msg) = pretty msg
 
 descriptor :: Recorder (WithPriority Log) -> PluginId -> PluginDescriptor IdeState
 descriptor recorder plId =
-  let resolveRecorder = cmapWithPrio LogResolve recorder
-      -- The explicit export action is more computationally heavy, so keep the
-      -- provider cheap and move most of it into the resolve.
-      explicitExportHandler = mkCodeActionHandlerWithResolve resolveRecorder explicitExportProvider explicitExportResolve
+  let resolveRecorder = cmapWithPrio LogSub recorder
+      -- Resolving is heavy, so a client without resolve support gets a command
+      -- to invoke rather than the work running inline on every request.
+      (explicitExportCommands, explicitExportHandler) =
+        mkCodeActionWithResolveAndCommand resolveRecorder plId
+          (explicitExportProvider recorder) explicitExportResolve
       exportHandlers = mkPluginHandler SMethod_TextDocumentCodeAction quickCodeActionHandlers <> explicitExportHandler
   in (defaultPluginDescriptor plId "Code actions for module export lists")
     { Ide.pluginHandlers = exportHandlers
+    , Ide.pluginCommands = explicitExportCommands
     }
 
 -- | Backs the @Export ...@ and @Unexport ...@ actions.
---
--- Follows the following general flow:
---   1. Locate what the cursor is currently highlighting.
---   2. Evaluate whether the target can be added or removed to the export list.
---   3. Emit the respective edits.
 quickCodeActionHandlers :: PluginMethodHandler IdeState Method_TextDocumentCodeAction
 quickCodeActionHandlers state _plId (CodeActionParams _ _ doc range _) = do
   let uri = doc ^. L.uri
@@ -72,8 +73,6 @@ quickCodeActionHandlers state _plId (CodeActionParams _ _ doc range _) = do
   case mUnder of
     -- Without the buffer we cannot tell whether a CPP module's export list holds
     -- a directive, so skip rather than risk erasing one.
-    --
-    -- See Note [Reprinting erases CPP directives].
     Just under | not (isCpp && isNothing msrc) -> do
       -- Also attach the action to any unused-binding diagnostics it fixes.
       unusedDiags <- liftIO $ unusedTopBindDiagnostics state nfp
@@ -117,9 +116,11 @@ removeAction msrc under ps = case under of
 -- action is withheld on:
 --   - library-exposed modules
 --   - an export list whose span holds a CPP directive
---   - a list holding a @module M@ re-export.
-explicitExportProvider :: PluginMethodHandler IdeState Method_TextDocumentCodeAction
-explicitExportProvider state _plId (CodeActionParams _ _ doc range _) = do
+--   - a list holding a @module M@ re-export
+--   - a project with a component the session has not loaded, per
+--     Note [Every consumer must be visible].
+explicitExportProvider :: Recorder (WithPriority Log) -> PluginMethodHandler IdeState Method_TextDocumentCodeAction
+explicitExportProvider _recorder state _plId (CodeActionParams _ _ doc range _) = do
   nfp <- getNormalizedFilePathE (doc ^. L.uri)
   offer <- runIdeActionE "Export.explicitly.offer" (shakeExtras state) $ do
     -- fine to use stale here, as we only need to know if we're in the header.
@@ -135,52 +136,89 @@ explicitExportProvider state _plId (CodeActionParams _ _ doc range _) = do
         | otherwise -> do
             -- Fetched only to check for a directive in the export-list span.
             msrc <- if isCpp then snd . fst <$> useWithStaleFastE GetFileContents nfp else pure Nothing
-            if exportListHasCpp msrc ps
+            -- Without the buffer a CPP module's list reads as directive-free,
+            -- so withhold rather than trust it.
+            if (isCpp && isNothing msrc) || exportListHasCpp msrc ps
               then pure False
               else do
                 let modName = printOutputable $ moduleName $ ms_mod summ
-                not <$> lift (isModuleExposed nfp modName)
+                (exposed, declared) <- lift (exposureCheck nfp modName)
+                if exposed then pure False else do
+                  -- See Note [Every consumer must be visible].
+                  depInfo <- useWithStaleFastE GetModuleGraph emptyFilePath
+                  let unloaded = unloadedOf (fst depInfo) declared
+                  pure (null unloaded)
       _ -> pure False
   pure . InL $
     [InR (mkAction "Export explicitly" & L.data_ ?~ toJSON ExportUsed) | offer]
 
+{- Note [Every consumer must be visible]
+
+An unused export is only ever an absence of references, so we need to ensure
+that we make an attempt at finding dependents.
+  - An unloaded component contributes no reverse dependencies and no reference
+    rows. 'unloadedOf' compares what the owning package's cabal file declares
+    against what the session knows.
+  - A stale index can also obscure active references, so 'isIndexCurrent' checks
+    each reverse dependency against its @.hie@ file before the query runs.
+-}
+
 -- | Resolve "Export explicitly".
---
--- Go over the module's reverse dependencies so hiedb sees every consumer, then
--- keep only the exports those consumers reference.
 explicitExportResolve :: ResolveFunction IdeState ExportResolveData Method_CodeActionResolve
 explicitExportResolve state _plId ca uri ExportUsed = do
   nfp <- getNormalizedFilePathE uri
-  (ps, avails, typeEnv, msrc, modName) <- runActionE "Export.explicitly.resolve" state $ do
-    pm <- useE GetParsedModuleWithComments nfp
-    tmr <- useE TypeCheck nfp
-    -- The usage query below only sees consumers hiedb has indexed. Index every
-    -- reverse dep first, or still-referenced exports get trimmed.
-    depInfo <- lift (useNoFile_ GetModuleGraph)
-    let revDeps = fromMaybe [] (transitiveReverseDependencies nfp depInfo)
+  (ps, avails, msrc, modName, revDeps) <-
+    runActionE "Export.explicitly.resolve" state $ do
+      pm <- useE GetParsedModuleWithComments nfp
+      tmr <- useE TypeCheck nfp
+      depInfo <- lift (useNoFile_ GetModuleGraph)
+      revDeps <-
+        maybe (throwError (PluginInternalError "This module is not in the loaded module graph")) pure
+          (transitiveReverseDependencies nfp depInfo)
+      msrc <- snd <$> useE GetFileContents nfp
+      let modName = T.pack $ moduleNameString $ moduleName $ ms_mod (pm_mod_summary pm)
+      pure (pm_parsed_source pm, tcg_exports (tmrTypechecked tmr), msrc, modName, revDeps)
 
-    -- Indexing only schedules the hiedb writes, so block until they land.
-    _ <- usesE GetModIfaceFromDiskAndIndex revDeps
-    liftIO $ awaitIndexed (shakeExtras state) revDeps
-    msrc <- snd <$> useE GetFileContents nfp
-    let modName = T.pack $ moduleNameString $ moduleName $ ms_mod (pm_mod_summary pm)
-    let tcg = tmrTypechecked tmr
-    pure (pm_parsed_source pm, tcg_exports tcg, tcg_type_env tcg, msrc, modName)
+  -- The provider decided on a stale tree, so re-establish its conditions here.
+  -- CPP is the third, handled inside 'retainExports'.
+  when (hasModuleReexport ps) $
+    throwError $ PluginInternalError "The export list re-exports a whole module"
 
-  -- Re-check we can do the action before touching the export list.
-  exposed <- runIdeActionE "Export.explicitly.resolve.exposed" (shakeExtras state) $
+  exposed <- runIdeActionE "Export.explicitly.resolve.cabal" (shakeExtras state) $
     lift (isModuleExposed nfp modName)
-  when exposed $ throwError $ PluginInternalError "Module is exposed publicly"
-  let excludeFp = [fromNormalizedFilePath nfp]
-      hieDb = withHieDb (shakeExtras state)
-  used <- liftIO $ filterM (isReferencedExternally hieDb excludeFp) avails
+  when exposed $
+    throwError $ PluginInternalError "Module is exposed publicly"
 
-  -- Emit alphabetically so the generated list is deterministic.
-  let lexicalOrder = fmap (LexicalFastString . rdrNameFS) . ieParentName . unLoc
-      isComplete parent members = case parentChildren typeEnv parent of
-        Just children -> all (`elem` members) children
-        Nothing       -> False
-      desired = sortOn lexicalOrder (concatMap (availToLIE isComplete) used)
-  case setExportList msrc ps desired of
-    Just edits -> pure $ ca & L.edit ?~ singleFileEdit uri edits
-    Nothing -> throwError $ PluginInternalError "Cannot rewrite the export list"
+  -- See Note [Every consumer must be visible].
+  stale <- liftIO $ filterM (fmap not . isIndexCurrent hieDb) revDeps
+  unless (null stale) $
+    throwError $ PluginInternalError $
+      "Cannot tell which exports are used: these reverse dependencies are not \
+      \indexed yet. " <> summarise (map (T.pack . fromNormalizedFilePath) stale)
+
+  used <- liftIO $ filterM (isReferencedExternally hieDb [fromNormalizedFilePath nfp]) avails
+  when (null used) $
+    throwError $ PluginInternalError
+      "No export is referenced from outside this module, and emptying the \
+      \export list is never the intended edit"
+
+  edits <- case hsmodExports (unLoc ps) of
+    -- An implicit list has no author formatting to preserve, so generate it.
+    Nothing ->
+      maybe (throwError (PluginInternalError "Cannot rewrite the export list")) pure
+        (addExportList ps (sortOn lexicalOrder (concatMap availToLIE used)))
+    -- Nothing matched means every entry survives, so the action is a no-op.
+    Just _ -> pure $ fromMaybe [] (retainExports msrc ps (concatMap keepNames used))
+  pure $ ca & L.edit ?~ singleFileEdit uri edits
+  where
+    hieDb = withHieDb (shakeExtras state)
+
+    -- Head plus members, so an entry survives when any name it brings into
+    -- scope is used.
+    keepNames a = map (occNameFS . nameOccName) (availName a : availNames a)
+
+    -- Generated lists are emitted alphabetically so the output is stable.
+    lexicalOrder = fmap (LexicalFastString . rdrNameFS) . ieParentName . unLoc
+
+    summarise xs = T.intercalate ", " (take 5 xs)
+                <> if length xs > 5 then ", and " <> T.pack (show (length xs - 5)) <> " more" else ""

@@ -7,7 +7,8 @@ module Ide.Plugin.Export.Exports
   , addConstructorExport
   , removeExport
   , removeConstructorExport
-  , setExportList
+  , retainExports
+  , addExportList
   , isReferencedExternally
   ) where
 
@@ -17,10 +18,12 @@ import           Data.Text                          (Text)
 import qualified Data.Text                          as T
 import           Data.Text.Utf16.Rope.Mixed         (Rope)
 import           Development.IDE.GHC.Compat
+import           Development.IDE.GHC.Compat.Util    (FastString)
 import           Development.IDE.GHC.Error          (srcSpanToRange)
 import           Development.IDE.GHC.ExactPrint.CPP (spanHasCpp)
 import           Development.IDE.Types.Shake        (WithHieDb)
-import           HieDb                              (findReferences)
+import           HieDb                              (findReferences,
+                                                     modInfoName, (:.) (..))
 import           Ide.Plugin.Export.ExactPrint
 import           Ide.Plugin.Export.Utils
 import           Language.Haskell.GHC.ExactPrint    (makeDeltaAst)
@@ -54,17 +57,8 @@ isExported n ps = case hsmodExports (unLoc ps) of
     nFS = rdrNameFS n
     covers ie = parentNameIs nFS ie || isInIE nFS ie
 
-{- Note [Reprinting erases CPP directives]
-
-CPP directives are processed before the parser, so an export list reprinted
-through ghc-exactprint silently drops it. The export plugin works around this:
-  - Additions splice the new item in surgically after the opening parenthesis.
-  - Removals and full replacements actions are omitted.
--}
-
 -- | Extract the export list and pick an edit strategy. Under CPP it splices
 -- surgically, otherwise it reprints the whole transformed list.
--- See Note [Reprinting erases CPP directives].
 withExportList
   :: Maybe Rope
   -> ParsedSource
@@ -90,31 +84,49 @@ addConstructorExport msrc parent ctor ps =
   withExportList msrc ps (addCtorUnderParent parent ctor) $ \full exports ->
     (\txt -> [insertAfterOpen full txt]) <$> freshCtorEntry parent ctor (unLoc exports)
 
--- | Replace the module's export list with exactly @desired@, regenerated as a
--- single-line list. See Note [Reprinting erases CPP directives].
-setExportList :: Maybe Rope -> ParsedSource -> [LIE GhcPs] -> Maybe [TextEdit]
-setExportList msrc ps desired = case hsmodExports (unLoc ps) of
-  Nothing -> addExportList ps desired
-  Just _  -> do
-    full <- exportListSpan ps
-    if spanHasCpp msrc full
-      then Nothing
-      else Just [TextEdit full (renderExportList desired)]
+-- | Drop the export entries whose head name is absent from @keep@, leaving
+-- survivors exactly as the author wrote them. 'Nothing' when nothing matches or
+-- the list holds a directive. See Note [Reprinting erases CPP directives].
+retainExports :: Maybe Rope -> ParsedSource -> [FastString] -> Maybe [TextEdit]
+retainExports msrc ps keep =
+  withExportList msrc ps (removeAllMatchingIE dropped) declineUnderCpp
+  where
+    -- Only `module M` re-exports and doc items lack a head name, and the
+    -- caller already refuses those.
+    dropped = maybe False ((`notElem` keep) . rdrNameFS) . ieParentName
 
--- | Splice a fresh @( item, ... )@ list in right after the module name.
+-- | Splice a fresh @( item, ... )@ list in right after the module header.
 addExportList :: ParsedSource -> [LIE GhcPs] -> Maybe [TextEdit]
 addExportList ps items = do
-  lmodName <- hsmodName (unLoc ps)
-  Range _ end <- srcSpanToRange (getLoc lmodName)
+  Range _ end <- anchor
   Just [TextEdit (Range end end) (" " <> renderExportList items)]
+  where
+    modl = unLoc ps
+    -- The grammar is @'module' modid maybemodwarning maybeexports 'where'@, so
+    -- a @{-# DEPRECATED #-}@ pragma takes the list's place after the name.
+    anchor = case hsmodDeprecMessage (hsmodExt modl) of
+      Just lwarn -> srcSpanToRange (getLoc lwarn)
+      Nothing    -> srcSpanToRange . getLoc =<< hsmodName modl
 
--- | Render export items as a parenthesized, comma-separated list.
 renderExportList :: [LIE GhcPs] -> Text
 renderExportList items = "(" <> T.intercalate ", " (map printIE items) <> ")"
 
--- | Keep an export if any name it brings into scope is referenced from another
--- module. External code may use a @T(..)@ child, without referencing @T@
--- itself, so we need to check all members.
+{- Note [Definition sites count as references]
+
+hiedb records a definition site as a reference like any other, so a re-exported
+name always has rows in its origin. Discarding those is what lets a dead
+re-export be trimmed at all.
+
+A consumer that reached the name through this module stays indistinguishable
+from one that imported the origin directly, so a re-export whose origin is
+imported elsewhere is kept. That errs towards keeping an export.
+-}
+
+-- | Keep an export if any name it brings into scope is referenced from outside
+-- both this module and the module that defines the name. A @T(..)@ child can be
+-- used without @T@ itself, so every member is checked.
+--
+-- See Note [Definition sites count as references].
 isReferencedExternally :: WithHieDb -> [FilePath] -> AvailInfo -> IO Bool
 isReferencedExternally withDb exclude avail = anyM referenced (availNames avail)
   where
@@ -123,7 +135,8 @@ isReferencedExternally withDb exclude avail = anyM referenced (availNames avail)
       Just mod -> do
         rows <- withDb $ \db ->
           findReferences db True (nameOccName n) (Just (moduleName mod)) (Just (moduleUnit mod)) exclude
-        pure (not (null rows))
+        pure (any (not . definedBy (moduleName mod)) rows)
+    definedBy mn (_ :. info) = modInfoName info == mn
 
 -- | Splice @itemTxt@ in right after the opening paren with a trailing comma,
 -- @( <itemTxt>, <existing> )@.
@@ -135,7 +148,6 @@ insertAfterOpen (Range (Position sl sc) _) itemTxt =
     pos = Position sl (sc + 1)
 
 -- | Remove the export of @name@. Declined under CPP.
--- See Note [Reprinting erases CPP directives].
 removeExport :: Maybe Rope -> ParsedSource -> RdrName -> Maybe [TextEdit]
 removeExport msrc ps name =
   withExportList msrc ps (removeMatchingIE matches) declineUnderCpp
@@ -147,6 +159,5 @@ removeConstructorExport msrc parent ctor ps =
   withExportList msrc ps (removeCtorUnderParent parent ctor) declineUnderCpp
 
 -- | An 'onCpp' handler that declines the edit.
--- See Note [Reprinting erases CPP directives].
 declineUnderCpp :: Range -> LExportList -> Maybe [TextEdit]
 declineUnderCpp _ _ = Nothing
