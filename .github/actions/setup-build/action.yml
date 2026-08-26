@@ -113,7 +113,6 @@ runs:
         restore-keys: |
               ${{ inputs.cache-prefix }}${{ env.cache-name }}-${{ inputs.os }}-${{ inputs.ghc }}-${{ env.INDEX_STATE }}-
               ${{ inputs.cache-prefix }}${{ env.cache-name }}-${{ inputs.os }}-${{ inputs.ghc }}-
-              ${{ inputs.cache-prefix }}${{ env.cache-name }}-${{ inputs.os }}-
 
     # We remove the freeze file because it could interfere with the build
     - name: "Remove freeze file"
