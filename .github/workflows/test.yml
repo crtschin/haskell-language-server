@@ -111,7 +111,12 @@ jobs:
 
       - name: Build
         # --semaphore (GHC -jsem) needs GHC >= 9.8, so skip it on 9.6.
-        run: cabal build --max-backjumps 10000 ${CABAL_ARGS} --jobs ${{ matrix.ghc != '9.6' && '--semaphore' || '' }} all
+        # Pass -O0 when we only build.
+        run: >-
+          cabal build --max-backjumps 10000 ${CABAL_ARGS} --jobs
+          ${{ matrix.ghc != '9.6' && '--semaphore' || '' }}
+          ${{ !matrix.test && '--disable-optimization' || '' }}
+          all
 
       - name: Set test options
         # See https://github.com/ocharles/tasty-rerun/issues/22 for why we need
