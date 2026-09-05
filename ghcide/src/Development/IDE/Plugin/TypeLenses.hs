@@ -44,8 +44,8 @@ import           Development.IDE.Core.PositionMapping (PositionMapping,
                                                        toCurrentRange)
 import           Development.IDE.Core.Rules           (IdeState, runAction)
 import           Development.IDE.Core.RuleTypes       (TypeCheck (TypeCheck))
-import           Development.IDE.Core.Service         (getDiagnostics)
-import           Development.IDE.Core.Shake           (getHiddenDiagnostics,
+import           Development.IDE.Core.Shake           (getFileDiagnostics,
+                                                       getFileHiddenDiagnostics,
                                                        use)
 import qualified Development.IDE.Core.Shake           as Shake
 import           Development.IDE.GHC.Compat
@@ -137,7 +137,6 @@ codeLensProvider ideState pId CodeLensParams{_textDocument = TextDocumentIdentif
           [ CodeLens _range Nothing (Just $ toJSON TypeLensesResolve)
             | diag <- diags
             , let Diagnostic {_range} = fdLspDiagnostic diag
-            , fdFilePath diag == nfp
             , isGlobalDiagnostic diag]
         -- The second option is to generate lenses from the GlobalBindingTypeSig
         -- rule. This is the only type that needs to have the range adjusted
@@ -169,8 +168,8 @@ codeLensProvider ideState pId CodeLensParams{_textDocument = TextDocumentIdentif
       else do
         -- For this mode we exclusively use diagnostics to create the lenses.
         -- However we will still use the GlobalBindingTypeSigs to resolve them.
-        diags <- liftIO $ atomically $ getDiagnostics ideState
-        hDiags <- liftIO $ atomically $ getHiddenDiagnostics ideState
+        diags <- liftIO $ atomically $ getFileDiagnostics nfp ideState
+        hDiags <- liftIO $ atomically $ getFileHiddenDiagnostics nfp ideState
         let allDiags = diags <> hDiags
         pure $ InL $ generateLensFromGlobalDiags allDiags
 

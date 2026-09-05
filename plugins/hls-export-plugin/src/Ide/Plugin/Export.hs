@@ -12,7 +12,7 @@ import qualified Data.Text                        as T
 import           Data.Text.Utf16.Rope.Mixed       (Rope)
 import           Development.IDE
 import           Development.IDE.Core.PluginUtils (runActionE, useE)
-import           Development.IDE.Core.Shake       (getDiagnostics)
+import           Development.IDE.Core.Shake       (getFileDiagnostics)
 import           Development.IDE.GHC.Compat
 import           Development.IDE.GHC.Compat.Error (_TcRnUnusedTopBind,
                                                    msgEnvelopeErrorL)
@@ -72,8 +72,8 @@ quickCodeActionHandlers state _plId (CodeActionParams _ _ doc range _) = do
 -- | The LSP diagnostics for names GHC reports as unused top-level definitions.
 unusedTopBindDiagnostics :: IdeState -> NormalizedFilePath -> IO [Diagnostic]
 unusedTopBindDiagnostics state nfp = do
-  diags <- atomically $ getDiagnostics state
-  pure [ fdLspDiagnostic d | d <- diags, fdFilePath d == nfp, isUnusedTopBind d ]
+  diags <- atomically $ getFileDiagnostics nfp state
+  pure [ fdLspDiagnostic d | d <- diags, isUnusedTopBind d ]
   where
     isUnusedTopBind =
       has (fdStructuredMessageL . _SomeStructuredMessage . msgEnvelopeErrorL . _TcRnUnusedTopBind)

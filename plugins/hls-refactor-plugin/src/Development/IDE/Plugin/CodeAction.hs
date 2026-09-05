@@ -161,7 +161,7 @@ codeAction state _ (CodeActionParams _ _ (TextDocumentIdentifier uri) range _) =
   contents <- liftIO $ runAction "hls-refactor-plugin.codeAction.getUriContents" state $ getUriContents $ toNormalizedUri uri
   liftIO $ do
     let mbFile = toNormalizedFilePath' <$> uriToFilePath uri
-    allDiags <- atomically $ filter (\d -> mbFile == Just (fdFilePath d)) <$> getDiagnostics state
+    allDiags <- maybe (pure []) (\nfp -> atomically $ getFileDiagnostics nfp state) mbFile
     (join -> parsedModule) <- runAction "GhcideCodeActions.getParsedModule" state $ getParsedModule `traverse` mbFile
     let
       textContents = fmap Rope.toText contents

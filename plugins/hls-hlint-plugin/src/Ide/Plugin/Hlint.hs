@@ -52,7 +52,7 @@ import           Development.IDE.Core.Compile                       (sourceParse
 import           Development.IDE.Core.FileStore                     (getVersionedTextDoc)
 import           Development.IDE.Core.Rules                         (defineNoFile,
                                                                      getParsedModuleWithComments)
-import           Development.IDE.Core.Shake                         (getDiagnostics)
+import           Development.IDE.Core.Shake                         (getFileDiagnostics)
 
 #if APPLY_REFACT
 import qualified Refact.Apply                                       as Refact
@@ -372,14 +372,13 @@ codeActionProvider ideState _pluginId (CodeActionParams _ _ documentId _ context
             runAction "Hlint.getVersionedTextDoc" ideState $
                 getVersionedTextDoc documentId
     liftIO $ fmap (InL . map LSP.InR) $ do
-      allDiagnostics <- atomically $ getDiagnostics ideState
+      docDiagnostics <- atomically $ getFileDiagnostics docNormalizedFilePath ideState
 
       let numHintsInDoc = length
             [lspDiagnostic
-            | diag <- allDiagnostics
+            | diag <- docDiagnostics
             , let lspDiagnostic = fdLspDiagnostic diag
             , validCommand lspDiagnostic
-            , fdFilePath diag == docNormalizedFilePath
             ]
       let numHintsInContext = length
             [diagnostic | diagnostic <- diags

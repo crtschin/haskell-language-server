@@ -45,8 +45,10 @@ module Development.IDE.Core.Shake(
     defineEarlyCutoff,
     defineNoFile, defineEarlyCutOffNoFile,
     getDiagnostics,
+    getFileDiagnostics,
     mRunLspT, mRunLspTCallback,
     getHiddenDiagnostics,
+    getFileHiddenDiagnostics,
     IsIdeGlobal, addIdeGlobal, addIdeGlobalExtras, getIdeGlobalState, getIdeGlobalAction,
     getIdeGlobalExtras,
     getIdeOptions,
@@ -116,9 +118,10 @@ import           Data.HashSet                           (HashSet)
 import qualified Data.HashSet                           as HSet
 import qualified Data.List                              as List
 import           Data.List.Extra                        (partition, takeEnd)
+import           Data.List.NonEmpty                     (NonEmpty)
+import qualified Data.List.NonEmpty                     as NE
 import qualified Data.Map.Strict                        as Map
 import           Data.Maybe
-import qualified Data.SortedList                        as SL
 import           Data.String                            (fromString)
 import qualified Data.Text                              as T
 import           Data.Time
@@ -980,9 +983,17 @@ getDiagnostics :: IdeState -> STM [FileDiagnostic]
 getDiagnostics IdeState{shakeExtras = ShakeExtras{diagnostics}} = do
     getAllDiagnostics diagnostics
 
+getFileDiagnostics :: NormalizedFilePath -> IdeState -> STM [FileDiagnostic]
+getFileDiagnostics nfp IdeState{shakeExtras = ShakeExtras{diagnostics}} =
+    getStoreFileDiagnostics nfp diagnostics
+
 getHiddenDiagnostics :: IdeState -> STM [FileDiagnostic]
 getHiddenDiagnostics IdeState{shakeExtras = ShakeExtras{hiddenDiagnostics}} = do
     getAllDiagnostics hiddenDiagnostics
+
+getFileHiddenDiagnostics :: NormalizedFilePath -> IdeState -> STM [FileDiagnostic]
+getFileHiddenDiagnostics nfp IdeState{shakeExtras = ShakeExtras{hiddenDiagnostics}} =
+    getStoreFileDiagnostics nfp hiddenDiagnostics
 
 -- | Find and release old keys from the state Hashmap
 --   For the record, there are other state sources that this process does not release:
@@ -1484,29 +1495,39 @@ actionLogger = shakeRecorder <$> getShakeExtras
 --------------------------------------------------------------------------------
 type STMDiagnosticStore = STM.Map NormalizedUri StoreItem'
 data StoreItem' = StoreItem' (Maybe Int32) FileDiagnosticsBySource
-type FileDiagnosticsBySource = Map.Map (Maybe T.Text) (SL.SortedList FileDiagnostic)
+type FileDiagnosticsBySource = Map.Map T.Text (NonEmpty FileDiagnostic)
 
 getDiagnosticsFromStore :: StoreItem' -> [FileDiagnostic]
-getDiagnosticsFromStore (StoreItem' _ diags) = concatMap SL.fromSortedList $ Map.elems diags
+getDiagnosticsFromStore (StoreItem' _ diags) = concatMap NE.toList $ Map.elems diags
+
+getStoreFileDiagnostics :: NormalizedFilePath -> STMDiagnosticStore -> STM [FileDiagnostic]
+getStoreFileDiagnostics nfp =
+    fmap (maybe [] getDiagnosticsFromStore) . STM.lookup (filePathToUri' nfp)
 
 updateSTMDiagnostics ::
   (forall a. String -> String -> a -> a) ->
   STMDiagnosticStore ->
   NormalizedUri ->
   Maybe Int32 ->
-  FileDiagnosticsBySource ->
+  T.Text -> -- ^ the source whose diagnostics these are
+  [FileDiagnostic] ->
   STM [FileDiagnostic]
-updateSTMDiagnostics addTag store uri mv newDiagsBySource =
-    getDiagnosticsFromStore . fromJust <$> STM.focus (Focus.alter update *> Focus.lookup) uri store
+updateSTMDiagnostics addTag store uri mv source diags =
+    maybe [] getDiagnosticsFromStore <$> STM.focus (Focus.alter update *> Focus.lookup) uri store
   where
-    update (Just(StoreItem' mvs dbs))
+    -- Sorted so unchanged diagnostics compare equal in 'updateFileDiagnostics'.
+    !newDiags = NE.sort <$> NE.nonEmpty diags
+    update (Just (StoreItem' mvs dbs))
       | addTag "previous version" (show mvs) $
-        addTag "previous count" (show $ Prelude.length $ filter (not.null) $ Map.elems dbs) False = undefined
-      | mvs == mv = Just (StoreItem' mv (newDiagsBySource <> dbs))
-    update _ = Just (StoreItem' mv newDiagsBySource)
+        addTag "previous count" (show $ Map.size dbs) False = undefined
+      | mvs == mv = storeItem (Map.alter (const newDiags) source dbs)
+    update _ = storeItem (maybe Map.empty (Map.singleton source) newDiags)
 
--- | Sets the diagnostics for a file and compilation step
---   if you want to clear the diagnostics call this with an empty list
+    storeItem dbs
+      | Map.null dbs = Nothing
+      | otherwise = Just (StoreItem' mv dbs)
+
+-- | Passing an empty list clears diagnostics.
 setStageDiagnostics
     :: (forall a. String -> String -> a -> a)
     -> NormalizedUri
@@ -1515,9 +1536,8 @@ setStageDiagnostics
     -> [FileDiagnostic]
     -> STMDiagnosticStore
     -> STM [FileDiagnostic]
-setStageDiagnostics addTag uri ver stage diags ds = updateSTMDiagnostics addTag ds uri ver updatedDiags
-  where
-    !updatedDiags = Map.singleton (Just stage) $! SL.toSortedList diags
+setStageDiagnostics addTag uri ver stage diags ds =
+    updateSTMDiagnostics addTag ds uri ver stage diags
 
 getAllDiagnostics ::
     STMDiagnosticStore ->

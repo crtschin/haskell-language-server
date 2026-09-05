@@ -11,6 +11,7 @@ module Development.IDE.Core.Service(
     IdeState, initialise, shutdown,
     runAction,
     getDiagnostics,
+    getFileDiagnostics,
     ideLogger,
     updatePositionMapping,
     Log(..),
