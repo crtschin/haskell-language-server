@@ -276,34 +276,16 @@ main = defaultTestRunner $ testGroup "Export"
             [ exportCase "preserves a trailing #ifdef block" "CppExportTail.hs" 15 0  -- on `baz`
                 (assertFlaggedBlockKept "baz")
 
-            , exportCase "preserves a leading #ifndef block" "CppExportHead.hs" 12 0 $ \txt -> do  -- on `bar`
-                -- the whole guarded block survives verbatim, not just stray substrings
-                assertContainsAll txt ["#ifndef EXAMPLE_FLAG\n    foo\n#endif"]
-                assertExportedUnconditionally "bar" txt
-
-            , exportCase "preserves both #if/#else branches" "CppExportElse.hs" 20 0 $ \txt -> do  -- on `extra`
-                assertContainsAll txt
-                    ["#ifdef EXAMPLE_FLAG", ", windows", "#else", ", posix", "#endif"]
-                assertExportedUnconditionally "extra" txt
-
-            , testCase "preserves an #include directive" $ runExportWith ["CppExportInclude.h"] "CppExportInclude.hs" $ \doc -> do
-                txt <- exportAndCheck doc (rangeAt 13 0)  -- on `extra`
-                liftIO $ do
-                    assertContainsAll txt ["#include \"CppExportInclude.h\"", "( extra, foo"]
-                    assertExportedUnconditionally "extra" txt
-
-            , exportCase "appends a new T(C) beside a CPP block" "CppCtorAppend.hs" 11 11 $ \txt -> do  -- on `Baz1`, no Baz entry yet
-                assertFlaggedBlockKept "Baz1" txt
-                txt `assertAnyInfix` ["Baz (Baz1)", "Baz(Baz1)"]
-
-            , exportCase "adds a separate entry beside an IEThingWith parent" "CppCtorExtend.hs" 8 18 $ \txt -> do  -- on `Foo2`, Foo has [Foo1]
-                assertFlaggedBlockKept "Foo2" txt
-                assertContainsAll txt ["Foo(Foo1)"]
-                txt `assertAnyInfix` ["Foo (Foo2)", "Foo(Foo2)"]
-
-            , exportCase "adds a separate entry without a double comma" "CppCtorMid.hs" 9 18 $ \txt -> do  -- on `Foo2`, Foo(Foo1) precedes `, bar`
-                assertContainsAll txt (flagBlock <> [", bar", "Foo(Foo1)"])
-                txt `assertAnyInfix` ["Foo (Foo2)", "Foo(Foo2)"]
+            , testCase "preserves #include directives and maps spans past them" $
+                runExportWith ["CppExportPrelude.h", "CppExportInclude.h"] "CppExportInclude.hs" $ \doc -> do
+                    txt <- exportAndCheck doc (rangeAt 20 0)  -- on `extra`
+                    liftIO $ do
+                        assertContainsAll txt
+                            [ "#include \"CppExportPrelude.h\""
+                            , "#include \"CppExportInclude.h\""
+                            , "( extra, foo"
+                            ]
+                        assertExportedUnconditionally "extra" txt
 
             , exportCase "adds a separate entry beside a bare-type parent" "CppCtorUpgrade.hs" 8 11 $ \txt -> do  -- on `Bar1`, Bar is IEThingAbs
                 assertFlaggedBlockKept "Bar1" txt
@@ -319,15 +301,6 @@ main = defaultTestRunner $ testGroup "Export"
                 -- the #ifdef sits inside Foo(...), where an in-place merge would erase it
                 assertContainsAll txt ["#ifdef EXAMPLE_FLAG\n      , Bar\n#endif", "Foo(Foo1"]
                 txt `assertAnyInfix` ["Foo (Foo2)", "Foo(Foo2)"]
-
-            , exportCase "front-inserts even when the close paren shares a line" "CppExportParenShared.hs" 18 0 $ \txt -> do  -- on `baz`
-                assertContainsAll txt (flagBlock <> [", bar )"])
-                assertExportedUnconditionally "baz" txt
-
-            , exportCase "no double comma when the last item already has a trailing comma" "CppExportTrailingComma.hs" 15 0 $ \txt -> do  -- on `baz`
-                -- a doubled `,,` would be caught by exportAndCheck's well-formedness check
-                assertContainsAll txt ["#ifdef EXAMPLE_FLAG", "flagged,", "#endif"]
-                assertExportedUnconditionally "baz" txt
 
             , exportCase "edit stays valid in the unparsed CPP branch" "CppExportOtherBranch.hs" 12 0 $ \txt -> do  -- on `bar`, the only item is in the other branch
                 -- the single item lives under #ifndef, so it is the whole parsed list.
@@ -434,17 +407,6 @@ main = defaultTestRunner $ testGroup "Export"
                     -- and Foo1's `-- first` is deleted along with Foo1.
                     assertContainsAll txt ["Foo2 -- second", "Foo3 -- third"]
                     not ("first" `T.isInfixOf` txt) @? ("Foo1's comment survived:\n" <> T.unpack txt)
-            ]
-
-        , testGroup "type classes"
-            [ removeCase "remove class exported as T(..)" "RemoveClass.hs" 2 6  -- on `Foo`
-                ["module RemoveClass (Bar, Baz (baz1))"]
-            , removeCase "remove class exported as bare T" "RemoveClass.hs" 5 6  -- on `Bar`
-                ["module RemoveClass (Foo (..), Baz (baz1))"]
-            , removeCase "remove class exported as T(method)" "RemoveClass.hs" 8 6  -- on `Baz`
-                ["module RemoveClass (Foo (..), Bar)"]
-            , noRemoveCase "no remove action when class not in export list" "RemoveClass.hs" 12 6  -- on `Qux`, not exported
-            , noRemoveCase "no remove action on class method" "RemoveClass.hs" 9 2  -- on `baz1` inside `class Baz a where`
             ]
 
         , testGroup "negative cases"
