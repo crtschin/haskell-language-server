@@ -1,0 +1,3 @@
+-- Three lines from one source line, so every span below the include
+-- only lands correctly if the CPP line mapping is applied. Keep the
+-- line count at three; the test's cursor position depends on it.
