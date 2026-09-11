@@ -34,9 +34,12 @@ import           Language.LSP.Protocol.Types
 
 data Log
   = forall a. Pretty a => LogResolve a
+  | LogNoExportExplicitly NormalizedFilePath Text
 
 instance Pretty Log where
   pretty (LogResolve msg) = pretty msg
+  pretty (LogNoExportExplicitly nfp why) =
+    pretty ("No \"Export explicitly\" action for " <> T.pack (fromNormalizedFilePath nfp) <> ": " <> why)
 
 descriptor :: Recorder (WithPriority Log) -> PluginId -> PluginDescriptor IdeState
 descriptor recorder plId =
@@ -44,7 +47,7 @@ descriptor recorder plId =
       -- Resolving is heavy, so a client without resolve support gets a command.
       (explicitExportCommands, explicitExportHandler) =
         mkCodeActionWithResolveAndCommand resolveRecorder plId
-          explicitExportProvider explicitExportResolve
+          (explicitExportProvider recorder) explicitExportResolve
       exportHandlers = mkPluginHandler SMethod_TextDocumentCodeAction quickCodeActionHandlers <> explicitExportHandler
   in (defaultPluginDescriptor plId "Code actions for module export lists")
     { Ide.pluginHandlers = exportHandlers
@@ -105,9 +108,11 @@ removeAction el under = case under of
 -- | Offer "Export explicitly" when the cursor is on the module header.
 --
 -- See Note [Every consumer must be visible].
-explicitExportProvider :: PluginMethodHandler IdeState Method_TextDocumentCodeAction
-explicitExportProvider state _plId (CodeActionParams _ _ doc range _) = do
+explicitExportProvider :: Recorder (WithPriority Log) -> PluginMethodHandler IdeState Method_TextDocumentCodeAction
+explicitExportProvider recorder state _plId (CodeActionParams _ _ doc range _) = do
   nfp <- getNormalizedFilePathE (doc ^. L.uri)
+  let skipped :: MonadIO m => Text -> m ()
+      skipped = logWith recorder Debug . LogNoExportExplicitly nfp
   wholeProject <- isWholeProjectLoading state
   offer <- if wholeProject
     then runIdeActionE "Export.explicitly.offer" (shakeExtras state) $ do
@@ -126,10 +131,13 @@ explicitExportProvider state _plId (CodeActionParams _ _ doc range _) = do
             then snd . fst <$> useWithStaleFastE GetFileContents nfp
             else pure Nothing
           if unsafeToRefine summ msrc ps
-            then pure False
-            else not <$> lift (exposureCheckFast nfp (modNameText summ))
-        _ -> pure False
-    else pure False
+            then False <$ skipped "the export list re-exports a module or holds a CPP directive"
+            else do
+              exposed <- lift (exposureCheckFast nfp (modNameText summ))
+              when exposed $ skipped "the module is exposed by its package"
+              pure (not exposed)
+        _ -> False <$ skipped "the cursor is not on the module header"
+    else False <$ skipped "componentsLoading is not set to whole-project loading"
   pure . InL $
     [InR (mkAction "Export explicitly" & L.data_ ?~ toJSON ExportUsed) | offer]
 
