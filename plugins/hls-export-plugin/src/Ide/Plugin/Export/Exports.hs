@@ -7,19 +7,18 @@ module Ide.Plugin.Export.Exports
   , addConstructorExport
   , removeExport
   , removeConstructorExport
+  , retainedNames
   , retainExports
   , addExportList
-  , isReferencedExternally
+  , isNameReferencedExternally
   ) where
 
-import           Control.Monad.Extra
 import           Data.Maybe
 import           Data.Text                       (Text)
 import qualified Data.Text                       as T
 import           Data.Text.Utf16.Rope.Mixed      (Rope)
 import           Development.IDE.Core.Text
 import           Development.IDE.GHC.Compat
-import           Development.IDE.GHC.Compat.Util
 import           Development.IDE.GHC.Error
 import           Development.IDE.Types.Shake
 import           HieDb
@@ -125,14 +124,22 @@ addConstructorExport el parent ctor =
   withExportList el (addCtorUnderParent parent ctor) $ \full exports ->
     (\txt -> [insertAfterOpen full txt]) <$> freshCtorEntry parent ctor (unLoc exports)
 
--- | Drop the export entries whose head name is absent from @keep@.
-retainExports :: ExportList -> [FastString] -> Maybe [TextEdit]
-retainExports el keep
-  | not (any (dropped . unLoc) items) = Just []
-  | otherwise = reprintExportList el (removeAllMatchingIE dropped)
+-- | Derive a 'Retained' from the avails that still have consumers outside the
+-- module.
+retainedNames :: (Name -> Bool) -> [AvailInfo] -> Retained
+retainedNames wanted used =
+  Retained { entry = (`elem` keep), child = (`elem` keepChildren) }
   where
-    L _ items = el.raw
-    dropped = maybe False ((`notElem` keep) . rdrNameFS) . ieParentName
+    names = concatMap availNames used
+    nameFS = occNameFS . nameOccName
+    keep = map nameFS names
+    keepChildren = map nameFS (filter wanted names)
+
+-- | Rewrite the export list to @retained@.
+retainExports :: ExportList -> Retained -> Maybe [TextEdit]
+retainExports el retained
+  | isNothing (trimIEs retained el.raw) = Just []
+  | otherwise                           = reprintExportList el (trimIEs retained)
 
 -- | Splice a fresh @( item, ... )@ list in directly after the module header.
 addExportList :: ParsedSource -> [LIE GhcPs] -> Maybe [TextEdit]
@@ -150,15 +157,14 @@ addExportList ps items = do
 renderExportList :: [LIE GhcPs] -> Text
 renderExportList items = "(" <> T.intercalate ", " (map printIE items) <> ")"
 
-isReferencedExternally :: WithHieDb -> [FilePath] -> AvailInfo -> IO Bool
-isReferencedExternally withDb exclude avail = anyM referenced (availNames avail)
+isNameReferencedExternally :: WithHieDb -> [FilePath] -> Name -> IO Bool
+isNameReferencedExternally withDb exclude n = case nameModule_maybe n of
+  Nothing  -> pure False
+  Just mod -> do
+    rows <- withDb $ \db ->
+      findReferences db True (nameOccName n) (Just (moduleName mod)) (Just (moduleUnit mod)) exclude
+    pure (any (external mod) rows)
   where
-    referenced n = case nameModule_maybe n of
-      Nothing  -> pure False
-      Just mod -> do
-        rows <- withDb $ \db ->
-          findReferences db True (nameOccName n) (Just (moduleName mod)) (Just (moduleUnit mod)) exclude
-        pure (any (external mod) rows)
     -- See Note [Generated references]. We need to ignore GHC inserted usages.
     external mod row@(refRow :. _) =
       not (refIsGenerated refRow)

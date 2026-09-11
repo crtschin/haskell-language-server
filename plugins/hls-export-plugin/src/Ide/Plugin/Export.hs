@@ -1,4 +1,4 @@
-module Ide.Plugin.Export (descriptor) where
+module Ide.Plugin.Export (descriptor, Log) where
 
 import           Control.Applicative                          ((<|>))
 import           Control.Concurrent.STM
@@ -193,16 +193,17 @@ explicitExportResolve state _plId ca uri ExportUsed = do
     pending <- readTVar (indexPending (hiedbWriter (shakeExtras state)))
     check (not (any (`HM.member` pending) revDeps))
 
-  used <- liftIO $ filterM
-    (isReferencedExternally (withHieDb (shakeExtras state)) [fromNormalizedFilePath nfp])
-    avails
-  let refreshed
-        -- An export is kept when any name it brings into scope is used.
-        | Just el <- exportListOf msrc ps =
-            retainExports el (map (occNameFS . nameOccName) (concatMap availNames used))
+  usedNames <- liftIO $ filterM
+    (isNameReferencedExternally (withHieDb (shakeExtras state)) [fromNormalizedFilePath nfp])
+    (concatMap availNames avails)
+  let wanted = (`elem` usedNames)
+      used = filter (any wanted . availNames) avails
+      refreshed
+        | Just el <- exportListOf msrc ps = retainExports el (retainedNames wanted used)
         | isExplicit ps = Nothing
         -- An implicit list can be cleanly regenerated.
-        | otherwise = addExportList ps (sortOn lexicalOrder (concatMap availToLIE used))
+        | otherwise =
+            addExportList ps (sortOn lexicalOrder (concatMap (availToLIE wanted) used))
   edits <- handleMaybe (PluginInternalError "Cannot rewrite the export list") refreshed
 
   pure $ ca & L.edit ?~ singleFileEdit uri edits

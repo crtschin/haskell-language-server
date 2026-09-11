@@ -513,6 +513,12 @@ main = defaultTestRunner $ testGroup "Export"
             , refineCase "a partial constructor export is not widened to T(..)"
                 "UsesRefinePartialCtor.hs" "RefinePartialCtor.hs"
                 ["T (MkA)"] ["unusedHere", "(..)", "MkB", "MkC"]
+            , refineCase "trims unused constructors out of a bundled entry"
+                "UsesRefineUnusedCtor.hs" "RefineUnusedCtor.hs"
+                ["T (MkA)", "U)"] ["MkB", "MkU"]
+            , refineCase "implicit module: a generated entry names only used constructors"
+                "UsesRefineImplicitCtor.hs" "RefineImplicitCtor.hs"
+                ["(T (MkA), U)"] ["MkB", "MkU", "unusedHere"]
             , refineCase "trims an unused re-export as well as an unused local"
                 "UsesReexportFacade.hs" "ReexportFacade.hs"
                 ["originUsed"] ["originUnused", "localUnused"]

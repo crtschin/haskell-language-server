@@ -6,7 +6,7 @@ module Ide.Plugin.Export.ExactPrint
   , availToLIE
   , appendIE
   , removeMatchingIE
-  , removeAllMatchingIE
+  , trimIEs
   , addCtorUnderParent
   , removeCtorUnderParent
   , printExportList
@@ -51,7 +51,9 @@ import           GHC                                       (EpToken (..),
 #else
 import           GHC                                       (AddEpAnn (..))
 #endif
-import           Data.Maybe                                (listToMaybe)
+import           Data.Maybe                                (fromMaybe,
+                                                            isNothing,
+                                                            listToMaybe)
 import           Development.IDE.GHC.ExactPrint.Annotation (ensureTrailingComma,
                                                             epl, isCommaAnn,
                                                             parenthesizeName,
@@ -71,12 +73,16 @@ type LExportList = LocatedL [LIE GhcPs]
 #endif
 
 -- | Render an 'AvailInfo' as an export item.
-availToLIE :: AvailInfo -> [LIE GhcPs]
-availToLIE = \case
+availToLIE :: (Name -> Bool) -> AvailInfo -> [LIE GhcPs]
+availToLIE wanted = \case
   AvailName n -> [nameToIE n]
   AvailTC parent names pieces
-    | all (== parent) names && null pieces -> [mkExportIE ExportFamily (nameRdr parent)] -- T
-    | otherwise                            -> [mkExportIE ExportAll (nameRdr parent)]    -- T(..)
+    | not (null children), all wanted children -> [mkExportIE ExportAll parentRdr]  -- T(..)
+    | c : cs <- filter wanted children -> [mkTypeWithIE parentRdr (nameRdr <$> c :| cs)]
+    | otherwise                        -> [mkExportIE ExportFamily parentRdr]       -- T
+    where
+      parentRdr = nameRdr parent
+      children = filter (/= parent) names ++ map flSelector pieces
   AvailFL fl -> [nameToIE (flSelector fl)]
   where
     nameToIE n
@@ -247,17 +253,38 @@ removeListItem p items = case break p items of
           _                 -> pre ++ post
      in Just (over _last (first removeTrailingCommaAnn) survivors)
 
+removeAllListItems
+  :: (LocatedAn AnnListItem a -> Bool)
+  -> [LocatedAn AnnListItem a]
+  -> Maybe [LocatedAn AnnListItem a]
+removeAllListItems p = fmap go . removeListItem p
+  where
+    go items = maybe items go (removeListItem p items)
+
 removeMatchingIE :: (IE GhcPs -> Bool) -> LExportList -> Maybe LExportList
 removeMatchingIE p (L l items) = L l <$> removeListItem (p . unLoc) items
 
--- | Drop every entry matching @p@. 'Nothing' if none match.
---
--- Each pass hands on the head's entry delta and strips the new last element's
--- comma, so repeating the single removal keeps the layout right.
-removeAllMatchingIE :: (IE GhcPs -> Bool) -> LExportList -> Maybe LExportList
-removeAllMatchingIE p = fmap go . removeMatchingIE p
+-- | Drop the entries not in @retained@.
+trimIEs :: Retained -> LExportList -> Maybe LExportList
+trimIEs retained (L l items)
+  | isNothing dropped, not trimmed = Nothing
+  | otherwise                      = Just (L l kept)
   where
-    go l = maybe l go (removeMatchingIE p l)
+    dropped = removeAllListItems (not . retainsEntry retained . unLoc) items
+    (trimmed, kept) = mapAccumL trimItem False (fromMaybe items dropped)
+    trimItem changed item@(L loc ie) =
+      maybe (changed, item) ((,) True . L loc) (trimChildren retained ie)
+
+-- | Drop the children not in @retained@.
+trimChildren :: Retained -> IE GhcPs -> Maybe (IE GhcPs)
+trimChildren retained ie = do
+  tw <- ieThingWithParts ie
+  kept <- removeAllListItems (not . retained.child . lieWrappedNameFS) tw.children
+  Just (rebuildThingWith tw kept)
+
+rebuildThingWith :: ThingWith -> [LIEWrappedName GhcPs] -> IE GhcPs
+rebuildThingWith tw []   = unLoc (mkTypeAbsIE (setEntryDP tw.parent (SameLine 0)))
+rebuildThingWith tw kept = tw.rebuild kept
 
 -- | 'Nothing' iff @ctor@ is already exported (via @T(..)@ or @T(...,ctor,...)@).
 addCtorUnderParent ::
@@ -280,7 +307,7 @@ addCtorUnderParent parent ctor lst@(L l items) =
       | otherwise = L itemLoc ie
 
 -- | Append @ctor@ to an @IEThingWith@'s children, reusing the sibling separator
--- comma. No-op for other items.
+-- comma.
 addCtorChildren :: RdrName -> IE GhcPs -> IE GhcPs
 addCtorChildren ctor ie = maybe ie grow (ieThingWithParts ie)
   where
@@ -312,24 +339,13 @@ removeCtorUnderParent parent ctor (L l items)
       | parentNameIs parentFS ie
       , Just tw <- ieThingWithParts ie
       , Just kept <- removeListItem isCtor tw.children
-      = (True, L itemLoc (rebuild tw kept))
+      = (True, L itemLoc (rebuildThingWith tw kept))
       | otherwise = (changed, item)
 
-    -- An empty child list means ctor was the only child, so collapse T(ctor) to
-    -- a bare T. Reusing the head keeps type and operator wrapping, so
-    -- `type (:<)(C)` becomes `type (:<)`.
-    rebuild tw []   = unLoc (mkTypeAbsIE (setEntryDP tw.head (SameLine 0)))
-    rebuild tw kept = tw.rebuild kept
-
--- One polymorphic helper cannot serve both printers. 'setEntryDP' carries a
--- @Default t@ constraint in ghc-exactprint 1.8 (GHC 9.6) and none from 1.10 on,
--- and -Wredundant-constraints rejects carrying it unconditionally.
 printExportList :: LExportList -> Text
 printExportList l = T.pack (exactPrint (setEntryDP l (SameLine 0)))
 
--- | Exactprint a single item, without the surrounding list layout. Dropping
--- the trailing comma keeps a spliced item from carrying it into text that
--- already supplies its own.
+-- | Exactprint a single item, without the surrounding list layout.
 printIE :: LIE GhcPs -> Text
 printIE item = T.pack (exactPrint (setEntryDP (first removeTrailingCommaAnn item) (SameLine 0)))
 

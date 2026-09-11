@@ -1856,7 +1856,6 @@ library hls-export-plugin
   build-depends:
     , aeson
     , containers
-    , extra
     , ghc
     , ghc-boot-th
     , ghc-exactprint

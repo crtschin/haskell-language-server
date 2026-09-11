@@ -14,6 +14,10 @@ library
                       UsesMultilineRefine
                       RefinePartialCtor
                       UsesRefinePartialCtor
+                      RefineUnusedCtor
+                      UsesRefineUnusedCtor
+                      RefineImplicitCtor
+                      UsesRefineImplicitCtor
                       ReexportOrigin
                       ReexportFacade
                       UsesReexportFacade

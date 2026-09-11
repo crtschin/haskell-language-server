@@ -1,5 +1,4 @@
 {-# LANGUAGE CPP #-}
-{- HLINT ignore "Avoid restricted function" -}
 
 module Ide.Plugin.Export.Utils
   ( exposureCheck
@@ -8,6 +7,8 @@ module Ide.Plugin.Export.Utils
   , ieParentName
   , ThingWith (..)
   , ieThingWithParts
+  , Retained (..)
+  , retainsEntry
   , parentNameIs
   , lieWrappedNameFS
   , singleFileEdit
@@ -63,7 +64,7 @@ ieParentName = listToMaybe . ieNames
 
 -- | An @IEThingWith@ (@T(C1, C2)@) taken apart.
 data ThingWith = ThingWith
-  { head     :: LIEWrappedName GhcPs
+  { parent   :: LIEWrappedName GhcPs
     -- ^ @T@. Keeps its wrapping, so @type (:<)(C)@ downgrades to @type (:<)@.
   , children :: [LIEWrappedName GhcPs]
     -- ^ The listed constructors, fields, or methods.
@@ -81,6 +82,16 @@ ieThingWithParts (IEThingWith x n w cs) =
   Just (ThingWith n cs (\cs' -> IEThingWith x n w cs'))
 #endif
 ieThingWithParts _ = Nothing
+
+-- | Which names an export list should keep.
+data Retained = Retained
+  { entry :: FastString -> Bool
+  , child :: FastString -> Bool
+  }
+
+-- | A headless entry, such as a Haddock section header, always stays.
+retainsEntry :: Retained -> IE GhcPs -> Bool
+retainsEntry retained = maybe True (retained.entry . rdrNameFS) . ieParentName
 
 -- | True when the export item's head name is the given 'FastString'.
 parentNameIs :: FastString -> IE GhcPs -> Bool
