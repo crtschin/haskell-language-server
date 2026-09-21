@@ -135,7 +135,7 @@ instance NFData HieFile where
 
 
 instance Hashable ModuleName where
-    hashWithSalt salt = hashWithSalt salt . show
+    hashWithSalt salt = hashWithSalt salt . getKey . getUnique . moduleNameFS
 
 
 instance NFData a => NFData (IdentifierDetails a) where

@@ -23,7 +23,7 @@ module Development.IDE.Types.Exports
 import           Control.DeepSeq             (NFData (..), force, ($!!))
 import           Control.Monad
 import           Data.Char                   (isUpper)
-import           Data.Hashable               (Hashable)
+import           Data.Hashable               (Hashable (..))
 import           Data.HashSet                (HashSet)
 import qualified Data.HashSet                as Set
 import           Data.List                   (isSuffixOf)
