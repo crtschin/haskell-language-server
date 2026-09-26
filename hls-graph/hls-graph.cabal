@@ -90,6 +90,7 @@ library
     , text
     , time
     , transformers
+    , transformers-base
     , unliftio
     , unordered-containers
 
