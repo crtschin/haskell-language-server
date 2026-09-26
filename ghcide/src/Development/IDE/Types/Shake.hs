@@ -22,6 +22,7 @@ import           Data.Dynamic
 import           Data.Hashable
 import           Data.Typeable                        (cast)
 import           Data.Vector                          (Vector)
+import           Development.IDE.Core.Internal.Fail   (BadDependency (..))
 import           Development.IDE.Core.PositionMapping
 import           Development.IDE.Core.RuleTypes       (FileVersion)
 import           Development.IDE.Graph                (Key, RuleResult, newKey,
@@ -64,11 +65,6 @@ data ValueWithDiagnostics
 
 -- | The state of the all values and diagnostics
 type Values = STM.Map Key ValueWithDiagnostics
-
--- | When we depend on something that reported an error, and we fail as a direct result, throw BadDependency
---   which short-circuits the rest of the action
-newtype BadDependency = BadDependency String deriving Show
-instance Exception BadDependency
 
 isBadDependency :: SomeException -> Bool
 isBadDependency x
