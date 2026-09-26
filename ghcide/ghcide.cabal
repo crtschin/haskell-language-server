@@ -85,6 +85,7 @@ library
     , lsp                          ^>=2.8
     , lsp-types                    ^>=2.4
     , mtl
+    , one-liner
     , opentelemetry                >=0.6.1
     , optparse-applicative
     , parallel
@@ -135,6 +136,8 @@ library
     Development.IDE.Core.IdeConfiguration
     Development.IDE.Core.Internal
     Development.IDE.Core.Internal.Shake
+    Development.IDE.Core.Internal.Tracked
+    Development.IDE.Core.Internal.Types
     Development.IDE.Core.LookupMod
     Development.IDE.Core.OfInterest
     Development.IDE.Core.PluginUtils
@@ -147,7 +150,6 @@ library
     Development.IDE.Core.Shake
     Development.IDE.Core.Text
     Development.IDE.Core.Tracing
-    Development.IDE.Core.UseStale
     Development.IDE.Core.WorkerThread
     Development.IDE.GHC.Compat
     Development.IDE.GHC.Compat.Core
