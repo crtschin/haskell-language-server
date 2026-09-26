@@ -33,6 +33,7 @@ module Development.IDE.Core.Internal.Shake(
     shakeEnqueue,
     newSession,
     use, useNoFile, uses, useWithStaleFast, useWithStaleFast', delayedAction,
+    lastValueIO, useWithoutDependency,
     useWithSeparateFingerprintRule,
     useWithSeparateFingerprintRule_,
     FastResult(..),
