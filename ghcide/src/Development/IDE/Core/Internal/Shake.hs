@@ -42,7 +42,7 @@ module Development.IDE.Core.Internal.Shake(
     BadDependency(..),
     RuleBody(..),
     define, defineNoDiagnostics,
-    defineEarlyCutoff,
+    defineEarlyCutoff, defineRule, DiagnosticSink(..),
     defineNoFile, defineEarlyCutOffNoFile,
     getDiagnostics,
     mRunLspT, mRunLspTCallback,
@@ -1238,31 +1238,36 @@ defineEarlyCutoff
     => Recorder (WithPriority Log)
     -> RuleBody k v
     -> Rules ()
-defineEarlyCutoff recorder (Rule op) = addRule $ \(Q (key, file)) (old :: Maybe BS.ByteString) mode -> otTracedAction key file mode traceA $ \traceDiagnostics -> do
+defineEarlyCutoff recorder = \case
+    Rule op -> defineRule recorder Publish (==) $ \k f _ -> op k f
+    RuleNoDiagnostics op -> defineRule recorder (LogAs (const LogDefineEarlyCutoffRuleNoDiagHasDiag)) (==) $ \k f _ -> second (mempty,) <$> op k f
+    RuleWithCustomNewnessCheck{..} -> defineRule recorder (LogAs (const LogDefineEarlyCutoffRuleCustomNewnessHasDiag)) newnessCheck $ \k f _ -> second (mempty,) <$> build k f
+    RuleWithOldValue op -> defineRule recorder Publish (==) op
+
+-- | Where the diagnostics of a rule go. Publishing an empty list clears the
+-- diagnostics of the key, so a rule that does not publish logs them instead.
+data DiagnosticSink
+    = Publish
+    | LogAs (T.Text -> FileDiagnostic -> Log)
+    -- ^ receives the rendered key
+
+-- | The primitive under every @define*@ variant.
+defineRule
+    :: IdeRule k v
+    => Recorder (WithPriority Log)
+    -> DiagnosticSink
+    -> (BS.ByteString -> BS.ByteString -> Bool)
+    -- ^ the new fingerprint counts as unchanged relative to the old one
+    -> (k -> NormalizedFilePath -> Value v -> Action (Maybe BS.ByteString, IdeResult v))
+    -> Rules ()
+defineRule recorder sink unchanged op = addRule $ \(Q (key, file)) (old :: Maybe BS.ByteString) mode -> otTracedAction key file mode traceA $ \traceDiagnostics -> do
     extras <- getShakeExtras
     let diagnostics ver diags = do
             traceDiagnostics diags
-            updateFileDiagnostics recorder file ver (newKey key) extras diags
-    defineEarlyCutoff' diagnostics (==) key file old mode $ const $ op key file
-defineEarlyCutoff recorder (RuleNoDiagnostics op) = addRule $ \(Q (key, file)) (old :: Maybe BS.ByteString) mode -> otTracedAction key file mode traceA $ \traceDiagnostics -> do
-    let diagnostics _ver diags = do
-            traceDiagnostics diags
-            mapM_ (logWith recorder Warning . LogDefineEarlyCutoffRuleNoDiagHasDiag) diags
-    defineEarlyCutoff' diagnostics (==) key file old mode $ const $ second (mempty,) <$> op key file
-defineEarlyCutoff recorder RuleWithCustomNewnessCheck{..} =
-    addRule $ \(Q (key, file)) (old :: Maybe BS.ByteString) mode ->
-        otTracedAction key file mode traceA $ \ traceDiagnostics -> do
-            let diagnostics _ver diags = do
-                    traceDiagnostics diags
-                    mapM_ (logWith recorder Warning . LogDefineEarlyCutoffRuleCustomNewnessHasDiag) diags
-            defineEarlyCutoff' diagnostics newnessCheck key file old mode $
-                const $ second (mempty,) <$> build key file
-defineEarlyCutoff recorder (RuleWithOldValue op) = addRule $ \(Q (key, file)) (old :: Maybe BS.ByteString) mode -> otTracedAction key file mode traceA $ \traceDiagnostics -> do
-    extras <- getShakeExtras
-    let diagnostics ver diags = do
-            traceDiagnostics diags
-            updateFileDiagnostics recorder file ver (newKey key) extras diags
-    defineEarlyCutoff' diagnostics (==) key file old mode $ op key file
+            case sink of
+              Publish  -> updateFileDiagnostics recorder file ver (newKey key) extras diags
+              LogAs mk -> mapM_ (logWith recorder Warning . mk (T.pack (show key))) diags
+    defineEarlyCutoff' diagnostics unchanged key file old mode $ op key file
 
 defineNoFile :: IdeRule k v => Recorder (WithPriority Log) -> (k -> Action v) -> Rules ()
 defineNoFile recorder f = defineNoDiagnostics recorder $ \k file -> do
