@@ -7,6 +7,7 @@ module Development.IDE.Graph.Internal.Types where
 
 import           Control.Concurrent.STM             (STM)
 import           Control.Monad                      ((>=>))
+import           Control.Monad.Base                 (MonadBase (..))
 import           Control.Monad.Catch
 import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Reader
@@ -69,6 +70,9 @@ data SRules = SRules {
 -- permissible to use the 'MonadFail' instance, which will lead to an 'IOException'.
 newtype Action a = Action {fromAction :: ReaderT SAction IO a}
     deriving newtype (Monad, Applicative, Functor, MonadIO, MonadFail, MonadThrow, MonadCatch, MonadMask, MonadUnliftIO)
+
+instance MonadBase Action Action where
+    liftBase = id
 
 data SAction = SAction {
     actionDatabase :: !Database,
