@@ -1,8 +1,5 @@
 {-# LANGUAGE PatternSynonyms #-}
 
--- | The surface of the shake core from before it moved to
--- "Development.IDE.Core.Internal.Shake". It re-exports the old export list
--- exactly, so that callers do not change.
 module Development.IDE.Core.Shake(
     IdeState, shakeSessionInit, shakeExtras, shakeDb, rootDir,
     ShakeExtras(..), getShakeExtras, getShakeExtrasRules,
