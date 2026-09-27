@@ -1,12 +1,5 @@
 {-# LANGUAGE PatternSynonyms #-}
 
--- | The rule API from before "Development.IDE.Core.Use" and
--- "Development.IDE.Core.Define", derived from their primitives.
---
--- Each name keeps its old type and its old behavior, including the failure
--- messages. "Development.IDE.Core.Shake" and
--- "Development.IDE.Core.PluginUtils" re-export these names. New code must use
--- the modules above.
 module Development.IDE.Core.Compat
   ( -- * Queries in rules
     use
@@ -64,7 +57,7 @@ module Development.IDE.Core.Compat
 
 import           Control.Monad                        (join, void, when)
 import           Control.Monad.IO.Class
-import           Control.Monad.Reader                 (ReaderT)
+import           Control.Monad.Reader                 (ReaderT, ask, runReaderT)
 import           Control.Monad.Trans.Except
 import           Control.Monad.Trans.Maybe
 import           Data.Aeson                           (Result (Success), toJSON)
@@ -84,22 +77,19 @@ import           Development.IDE.Core.Internal        (DiagnosticSink (..),
                                                        Log (..), Query (..),
                                                        ShakeExtras (..),
                                                        defineRule,
-                                                       getShakeExtras, hasRun,
-                                                       mRunLspT,
+                                                       getShakeExtras, mRunLspT,
                                                        mkDelayedAction,
                                                        shakeEnqueue, untracked)
 import           Development.IDE.Core.PositionMapping (PositionMapping,
                                                        fromCurrentPosition,
                                                        fromCurrentRange,
                                                        toCurrentPosition,
-                                                       toCurrentRange,
-                                                       zeroMapping)
+                                                       toCurrentRange)
 import           Development.IDE.Core.RuleTypes       (GetClientSettings (..))
-import           Development.IDE.Core.Use             (liftQuery, must, noFile,
-                                                       one, recalls, request,
-                                                       required, runQuery,
-                                                       snapshot, use, use_,
-                                                       uses, uses_)
+import           Development.IDE.Core.Use             (must, noFile, recalls,
+                                                       request, required,
+                                                       settle, use,
+                                                       use_, uses, uses_)
 import qualified Development.IDE.Core.Use             as Use
 import           Development.IDE.Graph                (Action, Rules)
 import           Development.IDE.Types.Location       (NormalizedFilePath,
@@ -184,20 +174,15 @@ data FastResult a = FastResult
 -- | Same as useWithStaleFast but lets you wait for an up to date result
 useWithStaleFast' :: IdeRule k v => k -> NormalizedFilePath -> IdeAction (FastResult v)
 useWithStaleFast' k f = do
-  done <- fmap runIdentity <$> request k (Identity f)
-  ran <- hasRun k f
-  s <- fmap untracked <$> one snapshot k f
-  case s of
-    Nothing | not ran -> do
-      a <- liftIO done
-      pure (FastResult ((,zeroMapping) <$> a) (pure a))
-    _ -> pure (FastResult s done)
+  extras <- ask
+  s <- useWithStaleFast k f
+  pure $ FastResult s (runIdentity <$> join (runQueryIn extras (request k (Identity f))))
 
 -- | Lookup value in the database and return with the stale value immediately
 -- Will queue an action to refresh the value.
 -- Might block the first time the rule runs, but never blocks after that.
 useWithStaleFast :: IdeRule k v => k -> NormalizedFilePath -> IdeAction (Maybe (v, PositionMapping))
-useWithStaleFast k f = stale <$> useWithStaleFast' k f
+useWithStaleFast k f = fmap untracked <$> settle k f
 
 runIdeAction :: String -> ShakeExtras -> IdeAction a -> IO a
 runIdeAction _ = runQueryIn
@@ -233,16 +218,11 @@ useWithStaleMT k f = untracked <$> Use.recall_ k f
 -- |ExceptT version of `useWithStaleFast` that throws a PluginRuleFailed upon
 -- failure
 useWithStaleFastE :: IdeRule k v => k -> NormalizedFilePath -> ExceptT PluginError IdeAction (v, PositionMapping)
-useWithStaleFastE = one (must (\k -> liftQuery . fasts k))
+useWithStaleFastE k f = untracked <$> Use.settle_ k f
 
 -- |MaybeT version of `useWithStaleFast`
 useWithStaleFastMT :: IdeRule k v => k -> NormalizedFilePath -> MaybeT IdeAction (v, PositionMapping)
-useWithStaleFastMT = one (must (\k -> liftQuery . fasts k))
-
-fasts
-  :: (Traversable t, IdeRule k v)
-  => k -> t NormalizedFilePath -> IdeAction (t (Maybe (v, PositionMapping)))
-fasts k = traverse (useWithStaleFast k)
+useWithStaleFastMT k f = untracked <$> Use.settle_ k f
 
 -- |ExceptT version of `runAction`, takes a ExceptT Action
 runActionE :: MonadIO m => String -> IdeState -> ExceptT e Action a -> ExceptT e m a
@@ -252,8 +232,8 @@ runActionE herald ide = mapExceptT (liftIO . runQueued herald ide)
 runActionMT :: MonadIO m => String -> IdeState -> MaybeT Action a -> MaybeT m a
 runActionMT herald ide = mapMaybeT (liftIO . runQueued herald ide)
 
--- | The same as 'Development.IDE.Core.Service.runAction', which this module
--- cannot import without an import cycle.
+-- | The same as 'Development.IDE.Core.Service.runAction', used to break an
+-- import cycle.
 runQueued :: String -> IdeState -> Action a -> IO a
 runQueued herald ide act = join $ shakeEnqueue (shakeExtras ide) (mkDelayedAction herald Debug act)
 
