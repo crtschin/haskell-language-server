@@ -9,6 +9,18 @@ module Development.IDE.Core.Internal
   , shakeEnqueue
     -- * Rule definition with an explicit policy
   , defineRule
+    -- * Shake core
+  , BadDependency (..)
+  , IdeRule
+  , IdeResult
+  , Q (..)
+  , ShakeExtras (..)
+  , getShakeExtras
+  , getValues
+  , askShake
+  , IdeAction (..)
+  , Log (..)
+  , mRunLspT
   ) where
 
 import           Development.IDE.Core.Internal.Shake
