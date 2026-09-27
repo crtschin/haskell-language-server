@@ -109,7 +109,9 @@ import           Language.LSP.Protocol.Types                        hiding
                                                                     (Null)
 import qualified Language.LSP.Protocol.Types                        as LSP
 
-import           Development.IDE.Core.PluginUtils                   as PluginUtils
+import           Development.IDE.Core.Compat                        (runActionE,
+                                                                     useE,
+                                                                     useWithStaleE)
 import qualified Development.IDE.Core.Shake                         as Shake
 import           Development.IDE.Spans.Pragmas                      (LineSplitTextEdits (LineSplitTextEdits),
                                                                      NextPragmaInfo (NextPragmaInfo),

@@ -11,7 +11,7 @@ import           Data.Text                        (Text)
 import qualified Data.Text                        as T
 import           Data.Text.Utf16.Rope.Mixed       (Rope)
 import           Development.IDE
-import           Development.IDE.Core.PluginUtils (runActionE, useE)
+import           Development.IDE.Core.Compat      (runActionE, useE)
 import           Development.IDE.Core.Shake       (getDiagnostics)
 import           Development.IDE.GHC.Compat
 import           Development.IDE.GHC.Compat.Error (_TcRnUnusedTopBind,

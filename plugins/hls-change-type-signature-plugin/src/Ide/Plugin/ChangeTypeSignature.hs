@@ -26,6 +26,7 @@ import           Development.IDE                   (FileDiagnostic,
                                                     fdLspDiagnosticL,
                                                     fdStructuredMessageL,
                                                     logWith, realSrcSpanToRange)
+import           Development.IDE.Core.Compat       (runActionE, useE)
 import           Development.IDE.Core.PluginUtils
 import           Development.IDE.Core.RuleTypes    (GetParsedModule (GetParsedModule))
 import           Development.IDE.GHC.Compat        hiding (vcat)

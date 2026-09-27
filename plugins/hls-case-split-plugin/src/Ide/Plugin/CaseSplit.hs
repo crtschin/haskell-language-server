@@ -96,9 +96,9 @@ import           Development.IDE                       (FileDiagnostic (fdStruct
                                                         getExtensionsSet,
                                                         runAction,
                                                         spanContainsRange)
+import           Development.IDE.Core.Compat           (runActionE, useE)
 import           Development.IDE.Core.FileStore        (getVersionedTextDoc)
-import           Development.IDE.Core.PluginUtils      (activeDiagnosticsInRange,
-                                                        runActionE, useE)
+import           Development.IDE.Core.PluginUtils      (activeDiagnosticsInRange)
 import           Development.IDE.GHC.Compat            (ConLike (PatSynCon, RealDataCon),
                                                         HoleKind (HoleVar),
                                                         HsMatchContext (CaseAlt),

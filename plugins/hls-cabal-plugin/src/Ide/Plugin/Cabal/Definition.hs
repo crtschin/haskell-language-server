@@ -14,7 +14,8 @@ import           Data.List                                     (find)
 import qualified Data.Maybe                                    as Maybe
 import qualified Data.Text                                     as T
 import           Development.IDE                               as D
-import           Development.IDE.Core.PluginUtils
+import           Development.IDE.Core.Compat                   (runActionE,
+                                                                useE)
 import qualified Distribution.Fields                           as Syntax
 import           Distribution.PackageDescription               (Benchmark (Benchmark, benchmarkBuildInfo, benchmarkName),
                                                                 BuildInfo (hsSourceDirs),

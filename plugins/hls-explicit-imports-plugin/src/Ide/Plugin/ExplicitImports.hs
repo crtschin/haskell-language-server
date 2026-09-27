@@ -41,7 +41,9 @@ import qualified Data.Unique                          as U (hashUnique,
                                                             newUnique)
 import           Development.IDE                      hiding (pluginHandlers,
                                                        pluginRules)
-import           Development.IDE.Core.PluginUtils
+import           Development.IDE.Core.Compat          (runActionE,
+                                                       toCurrentRangeE,
+                                                       useWithStaleE)
 import           Development.IDE.Core.PositionMapping
 import qualified Development.IDE.Core.Shake           as Shake
 import           Development.IDE.GHC.Compat           hiding ((<+>))

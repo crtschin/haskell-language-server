@@ -18,9 +18,10 @@ import qualified Data.HashMap.Strict                      as Map
 import qualified Data.HashSet                             as Set
 import           Data.Maybe
 import qualified Data.Text                                as T
+import           Development.IDE.Core.Compat              (runIdeActionE,
+                                                           useWithStaleFastE)
 import           Development.IDE.Core.Compile
 import           Development.IDE.Core.FileStore           (getUriContents)
-import           Development.IDE.Core.PluginUtils
 import           Development.IDE.Core.PositionMapping
 import           Development.IDE.Core.RuleTypes
 import           Development.IDE.Core.Service             hiding (Log, LogShake)

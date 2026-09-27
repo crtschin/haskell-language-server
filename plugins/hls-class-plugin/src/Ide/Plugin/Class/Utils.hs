@@ -2,16 +2,16 @@
 
 module Ide.Plugin.Class.Utils where
 
-import           Control.Monad.IO.Class           (MonadIO, liftIO)
+import           Control.Monad.IO.Class          (MonadIO, liftIO)
 import           Control.Monad.Trans.Except
-import           Data.Char                        (isAlpha)
-import qualified Data.Text                        as T
+import           Data.Char                       (isAlpha)
+import qualified Data.Text                       as T
 import           Development.IDE
-import           Development.IDE.Core.PluginUtils
+import           Development.IDE.Core.Compat     (runActionE, useWithStaleE)
 import           Development.IDE.GHC.Compat
-import           Development.IDE.GHC.Compat.Util  (fsLit)
-import           Development.IDE.Spans.Pragmas    (getNextPragmaInfo,
-                                                   insertNewPragma)
+import           Development.IDE.GHC.Compat.Util (fsLit)
+import           Development.IDE.Spans.Pragmas   (getNextPragmaInfo,
+                                                  insertNewPragma)
 import           Ide.Plugin.Error
 import           Ide.PluginUtils
 import           Language.LSP.Protocol.Types

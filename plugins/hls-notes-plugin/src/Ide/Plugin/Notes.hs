@@ -1,37 +1,35 @@
 module Ide.Plugin.Notes (descriptor, Log) where
 
-import           Control.Lens                     ((^.))
-import           Control.Monad.Except             (ExceptT, MonadError,
-                                                   throwError)
-import           Control.Monad.IO.Class           (liftIO)
-import qualified Data.Array                       as A
-import           Data.HashMap.Strict              (HashMap)
-import qualified Data.HashMap.Strict              as HM
-import qualified Data.HashSet                     as HS
-import           Data.List                        as List
-import           Data.Maybe                       (catMaybes, fromMaybe,
-                                                   listToMaybe, mapMaybe)
-import           Data.Text                        (Text)
-import qualified Data.Text                        as T
-import qualified Data.Text.Utf16.Rope.Mixed       as Rope
-import           Data.Traversable                 (for)
-import           Development.IDE                  hiding (line)
-import           Development.IDE.Core.PluginUtils (runActionE, useE)
-import           Development.IDE.Core.Shake       (toKnownFiles)
-import qualified Development.IDE.Core.Shake       as Shake
-import           Development.IDE.Core.Text        (lineAt)
-import           Development.IDE.Graph.Classes    (Hashable, NFData)
-import           GHC.Generics                     (Generic)
-import           Ide.Plugin.Error                 (PluginError (..))
+import           Control.Lens                  ((^.))
+import           Control.Monad.Except          (ExceptT, MonadError, throwError)
+import           Control.Monad.IO.Class        (liftIO)
+import qualified Data.Array                    as A
+import           Data.HashMap.Strict           (HashMap)
+import qualified Data.HashMap.Strict           as HM
+import qualified Data.HashSet                  as HS
+import           Data.List                     as List
+import           Data.Maybe                    (catMaybes, fromMaybe,
+                                                listToMaybe, mapMaybe)
+import           Data.Text                     (Text)
+import qualified Data.Text                     as T
+import qualified Data.Text.Utf16.Rope.Mixed    as Rope
+import           Data.Traversable              (for)
+import           Development.IDE               hiding (line)
+import           Development.IDE.Core.Compat   (runActionE, useE)
+import           Development.IDE.Core.Shake    (toKnownFiles)
+import qualified Development.IDE.Core.Shake    as Shake
+import           Development.IDE.Core.Text     (lineAt)
+import           Development.IDE.Graph.Classes (Hashable, NFData)
+import           GHC.Generics                  (Generic)
+import           Ide.Plugin.Error              (PluginError (..))
 import           Ide.Types
-import qualified Language.LSP.Protocol.Lens       as L
-import           Language.LSP.Protocol.Message    (Method (Method_TextDocumentCompletion, Method_TextDocumentDefinition, Method_TextDocumentHover, Method_TextDocumentReferences),
-                                                   SMethod (SMethod_TextDocumentCompletion, SMethod_TextDocumentDefinition, SMethod_TextDocumentHover, SMethod_TextDocumentReferences))
+import qualified Language.LSP.Protocol.Lens    as L
+import           Language.LSP.Protocol.Message (Method (Method_TextDocumentCompletion, Method_TextDocumentDefinition, Method_TextDocumentHover, Method_TextDocumentReferences),
+                                                SMethod (SMethod_TextDocumentCompletion, SMethod_TextDocumentDefinition, SMethod_TextDocumentHover, SMethod_TextDocumentReferences))
 import           Language.LSP.Protocol.Types
-import           Text.Regex.TDFA                  (Regex, caseSensitive,
-                                                   defaultCompOpt,
-                                                   defaultExecOpt,
-                                                   makeRegexOpts, matchAllText)
+import           Text.Regex.TDFA               (Regex, caseSensitive,
+                                                defaultCompOpt, defaultExecOpt,
+                                                makeRegexOpts, matchAllText)
 
 data Log
     = LogShake Shake.Log

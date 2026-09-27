@@ -45,7 +45,9 @@ import           Development.IDE                      (IdeState,
                                                        shakeExtras,
                                                        srcSpanToLocation,
                                                        srcSpanToRange, viaShow)
-import           Development.IDE.Core.PluginUtils
+import           Development.IDE.Core.Compat          (runActionE,
+                                                       runIdeActionE, useE,
+                                                       useMT, useWithStaleFastE)
 import           Development.IDE.Core.PositionMapping (PositionMapping,
                                                        toCurrentPosition,
                                                        toCurrentRange)
