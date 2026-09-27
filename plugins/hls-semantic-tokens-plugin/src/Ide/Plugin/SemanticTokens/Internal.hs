@@ -36,7 +36,7 @@ import           Development.IDE                          (Action,
                                                            fromNormalizedFilePath,
                                                            hieKind,
                                                            toNormalizedFilePath')
-import           Development.IDE.Core.PluginUtils         (runActionE, useE,
+import           Development.IDE.Core.Compat              (runActionE, useE,
                                                            useWithStaleE)
 import           Development.IDE.Core.Rules               (toIdeResult)
 import           Development.IDE.Core.RuleTypes           (DocAndTyThingMap (..))

@@ -37,7 +37,7 @@ import           Development.IDE.Core.Shake           (define, useWithStale)
 import qualified Development.IDE.Core.Shake           as Shake
 
 import           Control.DeepSeq                      (rwhnf)
-import           Development.IDE.Core.PluginUtils
+import           Development.IDE.Core.Compat          (runActionE, useE)
 import           Development.IDE.Core.PositionMapping (PositionMapping,
                                                        toCurrentRange)
 import           Development.IDE.GHC.Compat           (Extension (OverloadedRecordDot),

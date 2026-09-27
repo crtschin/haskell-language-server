@@ -37,8 +37,9 @@ import           Development.IDE                      (FileDiagnostic (..),
                                                        fdStructuredMessageL,
                                                        srcSpanToRange,
                                                        usePropertyAction)
+import           Development.IDE.Core.Compat          (runActionE,
+                                                       useWithStaleE)
 import           Development.IDE.Core.Compile         (TcModuleResult (..))
-import           Development.IDE.Core.PluginUtils
 import           Development.IDE.Core.PositionMapping (PositionMapping,
                                                        fromCurrentRange,
                                                        toCurrentRange)

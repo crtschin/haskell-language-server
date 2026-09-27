@@ -24,7 +24,7 @@ import           Development.IDE                      (DocAndTyThingMap (DKMap),
                                                        Recorder, WithPriority,
                                                        printOutputableOneLine,
                                                        useWithStaleFast)
-import           Development.IDE.Core.PluginUtils     (runIdeActionE,
+import           Development.IDE.Core.Compat          (runIdeActionE,
                                                        useWithStaleFastE)
 import           Development.IDE.Core.PositionMapping (fromCurrentPosition)
 import           Development.IDE.GHC.Compat           (FastStringCompat, Name,

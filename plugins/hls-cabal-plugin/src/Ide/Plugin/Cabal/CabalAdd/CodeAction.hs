@@ -15,7 +15,7 @@ import           Data.Aeson.Types                              (toJSON)
 import           Data.Foldable                                 (asum)
 import           Data.Maybe                                    (mapMaybe)
 import qualified Data.Text                                     as T
-import           Development.IDE.Core.PluginUtils              (uriToFilePathE)
+import           Development.IDE.Core.Compat                   (uriToFilePathE)
 import           Development.IDE.Types.Location                (Uri)
 import           Distribution.PackageDescription
 import           Distribution.PackageDescription.Configuration (flattenPackageDescription)

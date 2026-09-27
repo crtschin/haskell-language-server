@@ -23,6 +23,7 @@ import           Data.List.Extra                  (nubOrdOn)
 import           Data.Maybe                       (listToMaybe, mapMaybe)
 import qualified Data.Text                        as T
 import           Development.IDE
+import           Development.IDE.Core.Compat      (runActionE, useE)
 import           Development.IDE.Core.FileStore   (getVersionedTextDoc)
 import           Development.IDE.Core.PluginUtils
 import           Development.IDE.GHC.Compat

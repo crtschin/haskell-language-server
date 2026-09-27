@@ -19,6 +19,7 @@ module Development.IDE.Core.Internal
   , getValues
   , askShake
   , IdeAction (..)
+  , IdeState (..)
   , Log (..)
   , mRunLspT
   ) where

@@ -26,6 +26,8 @@ import qualified Data.Map                                 as M
 import           Data.Maybe                               (mapMaybe)
 import qualified Data.Text                                as T
 import           Development.IDE                          hiding (line)
+import           Development.IDE.Core.Compat              (runActionE,
+                                                           useWithStaleE)
 import           Development.IDE.Core.Compile             (sourceParser,
                                                            sourceTypecheck)
 import           Development.IDE.Core.FileStore           (getVersionedTextDoc)

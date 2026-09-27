@@ -84,7 +84,9 @@ import qualified GHC.LanguageExtensions.Type                  as LangExt (Extens
 import           Development.IDE.Session.Ghc                  (disableOptimisation)
 
 import           Data.List.Extra                              (unsnoc)
-import           Development.IDE.Core.PluginUtils
+import           Development.IDE.Core.Compat                  (runActionE,
+                                                               uriToFilePathE,
+                                                               useWithStaleE)
 import           Development.IDE.Types.Shake                  (toKey)
 import           GHC.Types.SrcLoc                             (UnhelpfulSpanReason (UnhelpfulInteractive))
 #if MIN_VERSION_ghc(9,13,0)

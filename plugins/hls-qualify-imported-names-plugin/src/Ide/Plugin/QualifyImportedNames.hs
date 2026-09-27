@@ -25,7 +25,7 @@ import qualified Data.Text.Lines                  as Text.Lines
 import           Data.Text.Utf16.Rope.Mixed       (Rope)
 import qualified Data.Text.Utf16.Rope.Mixed       as Rope
 import           Development.IDE                  (spanContainsRange)
-import           Development.IDE.Core.PluginUtils
+import           Development.IDE.Core.Compat      (runActionE, useE)
 import           Development.IDE.Core.RuleTypes   (GetFileContents (GetFileContents),
                                                    GetHieAst (GetHieAst),
                                                    HieAstResult (HAR, refMap),

@@ -43,8 +43,10 @@ import           Development.IDE                      (GetParsedModule (GetParse
                                                        realSrcSpanToRange,
                                                        rootDir, runAction,
                                                        useWithStale, (<+>))
+import           Development.IDE.Core.Compat          (runActionE,
+                                                       uriToFilePathE,
+                                                       useWithStaleE)
 import           Development.IDE.Core.FileStore       (getFileContents)
-import           Development.IDE.Core.PluginUtils
 import           Development.IDE.Core.PositionMapping (toCurrentRange)
 import           Development.IDE.GHC.Compat           (GenLocated (L),
                                                        getSessionDynFlags,
