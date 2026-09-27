@@ -64,4 +64,5 @@ module Development.IDE.Core.Shake(
     askShake
     ) where
 
+import           Development.IDE.Core.Compat
 import           Development.IDE.Core.Internal.Shake
