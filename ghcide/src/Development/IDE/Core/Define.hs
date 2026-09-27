@@ -186,13 +186,10 @@ registerRule
   :: IdeRule k v
   => Bool -> FingerprintCheck -> (k -> NormalizedFilePath -> Value v -> Action (Output p v)) -> RuleScope ()
 registerRule publishes (FingerprintCheck unchanged) body = RuleScope $ ReaderT $ \recorder ->
-  defineRule recorder sink unchanged $ \k file old -> do
+  defineRule recorder publishes unchanged $ \k file old -> do
     Output{..} <- body k file old
     pure (fp cutoff, (diagnostics, result))
   where
-    sink
-      | publishes = Publish
-      | otherwise = LogAs LogRuleDoesNotPublishDiagnostics
     fp AlwaysRerun       = Nothing
     fp (RerunOnChange f) = Just f
 
