@@ -10,6 +10,18 @@ module Development.IDE.Core.Internal
     -- * Rule definition with an explicit policy
   , defineRule
   , DiagnosticSink (..)
+    -- * Shake core
+  , BadDependency (..)
+  , IdeRule
+  , IdeResult
+  , Q (..)
+  , ShakeExtras (..)
+  , getShakeExtras
+  , getValues
+  , askShake
+  , IdeAction (..)
+  , Log (..)
+  , mRunLspT
   ) where
 
 import           Development.IDE.Core.Internal.Shake
