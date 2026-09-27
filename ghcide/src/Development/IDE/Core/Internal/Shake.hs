@@ -193,6 +193,7 @@ data Log
   | LogDiagsDiffButNoLspEnv ![FileDiagnostic]
   | LogDefineEarlyCutoffRuleNoDiagHasDiag !FileDiagnostic
   | LogDefineEarlyCutoffRuleCustomNewnessHasDiag !FileDiagnostic
+  | LogRuleDoesNotPublishDiagnostics !T.Text !FileDiagnostic
   | LogCancelledAction !T.Text
   | LogSessionInitialised
   | LogLookupPersistentKey !T.Text
@@ -230,6 +231,9 @@ instance Pretty Log where
       <+> pretty (showDiagnosticsColored [fileDiagnostic])
     LogDefineEarlyCutoffRuleCustomNewnessHasDiag fileDiagnostic ->
       "defineEarlyCutoff RuleWithCustomNewnessCheck - file diagnostic:"
+      <+> pretty (showDiagnosticsColored [fileDiagnostic])
+    LogRuleDoesNotPublishDiagnostics key fileDiagnostic ->
+      "Rule" <+> pretty key <+> "does not publish diagnostics - file diagnostic:"
       <+> pretty (showDiagnosticsColored [fileDiagnostic])
     LogCancelledAction action ->
         pretty action <+> "was cancelled"

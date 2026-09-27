@@ -128,9 +128,11 @@ library
     Control.Concurrent.Strict
     Development.IDE
     Development.IDE.Core.Actions
+    Development.IDE.Core.API
     Development.IDE.Core.Compat
     Development.IDE.Core.Compile
     Development.IDE.Core.Debouncer
+    Development.IDE.Core.Define
     Development.IDE.Core.FileStore
     Development.IDE.Core.FileUtils
     Development.IDE.Core.IdeConfiguration
