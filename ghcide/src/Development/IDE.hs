@@ -1,3 +1,4 @@
+{-# LANGUAGE PatternSynonyms #-}
 module Development.IDE
 (
     -- TODO It would be much nicer to enumerate all the exports
@@ -22,8 +23,8 @@ import           Development.IDE.Core.Rules            as X (getClientConfigActi
 import           Development.IDE.Core.RuleTypes        as X
 import           Development.IDE.Core.Service          as X (runAction)
 import           Development.IDE.Core.Shake            as X (FastResult (..),
-                                                             IdeAction (..),
-                                                             IdeRule, IdeState,
+                                                             IdeAction, IdeRule,
+                                                             IdeState,
                                                              RuleBody (..),
                                                              ShakeExtras,
                                                              VFSModified (..),
@@ -33,8 +34,11 @@ import           Development.IDE.Core.Shake            as X (FastResult (..),
                                                              defineNoDiagnostics,
                                                              getClientConfig,
                                                              getPluginConfigAction,
-                                                             ideLogger, rootDir,
+                                                             ideLogger,
+                                                             pattern IdeAction,
+                                                             rootDir,
                                                              runIdeAction,
+                                                             runIdeActionT,
                                                              shakeExtras, use,
                                                              useNoFile,
                                                              useNoFile_,

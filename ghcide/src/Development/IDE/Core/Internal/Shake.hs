@@ -33,7 +33,8 @@ module Development.IDE.Core.Internal.Shake(
     shakeEnqueue,
     newSession,
     delayedAction,
-    lastValueIO, useWithoutDependency, getValues,
+    Pending, enqueue, wait,
+    lastValueIO, peekLastValue, useWithoutDependency, getValues, hasRun,
     BadDependency(..),
     defineRule,
     getDiagnostics,
@@ -57,7 +58,8 @@ module Development.IDE.Core.Internal.Shake(
     WithProgressFunc, WithIndefiniteProgressFunc,
     ProgressEvent(..),
     DelayedAction, mkDelayedAction,
-    IdeAction(..),
+    Query(..),
+    QueryFailed(..),
     mkUpdater,
     -- Exposed for testing.
     Q(..),
@@ -73,7 +75,8 @@ module Development.IDE.Core.Internal.Shake(
     askShake
     ) where
 
-import           Control.Concurrent.Async
+import           Control.Concurrent.Async               hiding (wait)
+import qualified Control.Concurrent.Async               as Async
 import           Control.Concurrent.STM
 import           Control.Concurrent.STM.Stats           (atomicallyNamed)
 import           Control.Concurrent.Strict
@@ -83,6 +86,7 @@ import           Control.Exception.Extra                hiding (bracket_)
 import           Control.Exception.Context              (displayExceptionContext)
 #endif
 import           Control.Lens                           ((%~), (&), (?~))
+import           Control.Monad.Base                     (MonadBase (..))
 import           Control.Monad.Extra
 import           Control.Monad.IO.Class
 import           Control.Monad.Reader
@@ -136,6 +140,7 @@ import           Development.IDE.GHC.Compat             (NameCache,
                                                          initNameCache,
                                                          knownKeyNames)
 #endif
+import           Development.IDE.Core.Internal.Types (IdeRule, MonadPluginFail (..))
 import           Development.IDE.GHC.Orphans            ()
 import           Development.IDE.Graph                  hiding (ShakeValue,
                                                          action)
@@ -162,6 +167,7 @@ import           HieDb.Types
 import           Ide.Logger                             hiding (Priority)
 import qualified Ide.Logger                             as Logger
 import           Ide.Plugin.Config
+import           Ide.Plugin.Error                       (PluginError)
 import qualified Ide.PluginUtils                        as HLS
 import           Ide.Types
 import qualified Language.LSP.Protocol.Lens             as L
@@ -317,6 +323,9 @@ data ShakeExtras = ShakeExtras
     , persistentKeys :: TVar (KeyMap GetStalePersistent)
       -- ^ Registry for functions that compute/get "stale" results for the rule
       -- (possibly from disk)
+    , persistedValues :: STM.Map Key (Maybe (Dynamic, PositionDelta, Maybe FileVersion))
+      -- ^ Results of 'persistentKeys' read by 'peekLastValue', which leaves
+      -- 'state' to the build
     , vfsVar :: TVar VFS
     -- ^ A snapshot of the current state of the virtual file system. Updated on shakeRestart
     -- VFS state is managed by LSP. However, the state according to the lsp library may be newer than the state of the current session,
@@ -338,7 +347,7 @@ type WithProgressFunc = forall a.
 type WithIndefiniteProgressFunc = forall a.
     T.Text -> LSP.ProgressCancellable -> IO a -> IO a
 
-type GetStalePersistent = NormalizedFilePath -> IdeAction (Maybe (Dynamic,PositionDelta,Maybe Int32))
+type GetStalePersistent = NormalizedFilePath -> Query (Maybe (Dynamic,PositionDelta,Maybe Int32))
 
 getShakeExtras :: Action ShakeExtras
 getShakeExtras = do
@@ -358,7 +367,7 @@ getShakeExtrasRules = do
 -- This is called when we don't already have a result, or computing the rule failed.
 -- The result of this function will always be marked as 'stale', and a 'proper' rebuild of the rule will
 -- be queued if the rule hasn't run before.
-addPersistentRule :: IdeRule k v => k -> (NormalizedFilePath -> IdeAction (Maybe (v,PositionDelta,Maybe Int32))) -> Rules ()
+addPersistentRule :: IdeRule k v => k -> (NormalizedFilePath -> Query (Maybe (v,PositionDelta,Maybe Int32))) -> Rules ()
 addPersistentRule k getVal = do
   ShakeExtras{persistentKeys} <- getShakeExtrasRules
   void $ liftIO $ atomically $ modifyTVar' persistentKeys $ insertKeyMap (newKey k) (fmap (fmap (first3 toDyn)) . getVal)
@@ -430,27 +439,13 @@ getIdeOptionsIO ide = do
 -- | Return the most recent, potentially stale, value and a PositionMapping
 -- for the version of that value.
 lastValueIO :: IdeRule k v => ShakeExtras -> k -> NormalizedFilePath -> IO (Maybe (v, PositionMapping))
-lastValueIO s@ShakeExtras{positionMapping,persistentKeys,state} k file = do
+lastValueIO s@ShakeExtras{positionMapping,state} k file = do
 
-    let readPersistent
-          | IdeTesting testing <- ideTesting s -- Don't read stale persistent values in tests
-          , testing = pure Nothing
-          | otherwise = do
-          pmap <- readTVarIO persistentKeys
-          mv <- runMaybeT $ do
-            liftIO $ logWith (shakeRecorder s) Debug $ LogLookupPersistentKey (T.pack $ show k)
-            f <- MaybeT $ pure $ lookupKeyMap (newKey k) pmap
-            (dv,del,ver) <- MaybeT $ runReaderT (runIdeActionT $ f file) s
-            MaybeT $ pure $ (,del,ver) <$> fromDynamic dv
-          case mv of
+    let readPersistent = readPersisted s k file >>= \case
             Nothing -> atomicallyNamed "lastValueIO 1" $ do
                 STM.focus (Focus.alter (alterValue $ Failed True)) (toKey k file) state
                 return Nothing
-            Just (v,del,mbVer) -> do
-                actual_version <- case mbVer of
-                  Just ver -> pure (Just $ VFSVersion ver)
-                  Nothing -> (Just . ModificationTime <$> getModTime (fromNormalizedFilePath file))
-                              `catch` (\(_ :: IOException) -> pure Nothing)
+            Just (v,del,actual_version) ->
                 atomicallyNamed "lastValueIO 2" $ do
                   STM.focus (Focus.alter (alterValue $ Stale (Just del) actual_version (toDyn v))) (toKey k file) state
                   Just . (v,) . addOldDelta del <$> mappingForVersion positionMapping file actual_version
@@ -466,12 +461,71 @@ lastValueIO s@ShakeExtras{positionMapping,persistentKeys,state} k file = do
     atomicallyNamed "lastValueIO 4"  (STM.lookup (toKey k file) state) >>= \case
       Nothing -> readPersistent
       Just (ValueWithDiagnostics value _) -> case value of
-        Succeeded ver (fromDynamic -> Just v) ->
-            atomicallyNamed "lastValueIO 5"  $ Just . (v,) <$> mappingForVersion positionMapping file ver
-        Stale del ver (fromDynamic -> Just v) ->
-            atomicallyNamed "lastValueIO 6"  $ Just . (v,) . maybe id addOldDelta del <$> mappingForVersion positionMapping file ver
         Failed p | not p -> readPersistent
-        _ -> pure Nothing
+        _ -> atomicallyNamed "lastValueIO 5" $ builtValue positionMapping file value
+
+-- | Does the same as 'lastValueIO' without writing into 'state', so that a
+-- key that never ran stays distinguishable from one that failed.
+peekLastValue :: IdeRule k v => ShakeExtras -> k -> NormalizedFilePath -> IO (Maybe (v, PositionMapping))
+peekLastValue s@ShakeExtras{positionMapping,persistedValues,state} k file = do
+    let key = toKey k file
+        fromPersisted (dv, del, ver) = case fromDynamic dv of
+            Just v -> Just . (v,) . addOldDelta del <$> mappingForVersion positionMapping file ver
+            Nothing -> pure Nothing
+    (built, cached) <- atomicallyNamed "peekLastValue" $ do
+        built <- STM.lookup key state >>= \case
+            Just (ValueWithDiagnostics value _) -> builtValue positionMapping file value
+            Nothing -> pure Nothing
+        (built,) <$> STM.lookup key persistedValues
+    case (built, cached) of
+      (Just v, _) -> pure (Just v)
+      (Nothing, Just persisted) -> atomicallyNamed "peekLastValue cached" $ maybe (pure Nothing) fromPersisted persisted
+      (Nothing, Nothing) -> do
+          persisted <- fmap (\(v, del, ver) -> (toDyn v, del, ver)) <$> readPersisted s k file
+          atomicallyNamed "peekLastValue persist" $ do
+            STM.insert persisted key persistedValues
+            maybe (pure Nothing) fromPersisted persisted
+
+-- | The value of the last build that succeeded, if any.
+builtValue
+    :: Typeable v
+    => STM.Map NormalizedUri (EnumMap Int32 (PositionDelta, PositionMapping))
+    -> NormalizedFilePath -> Value Dynamic -> STM (Maybe (v, PositionMapping))
+builtValue positionMapping file = \case
+    Succeeded ver (fromDynamic -> Just v) ->
+        Just . (v,) <$> mappingForVersion positionMapping file ver
+    Stale del ver (fromDynamic -> Just v) ->
+        Just . (v,) . maybe id addOldDelta del <$> mappingForVersion positionMapping file ver
+    _ -> pure Nothing
+
+-- | Reads the value of the persistent rule of the key, with the version of
+-- the file that it was built from.
+readPersisted
+    :: IdeRule k v
+    => ShakeExtras -> k -> NormalizedFilePath -> IO (Maybe (v, PositionDelta, Maybe FileVersion))
+readPersisted s@ShakeExtras{persistentKeys} k file
+    | IdeTesting testing <- ideTesting s -- Don't read stale persistent values in tests
+    , testing = pure Nothing
+    | otherwise = do
+    pmap <- readTVarIO persistentKeys
+    mv <- runMaybeT $ do
+        liftIO $ logWith (shakeRecorder s) Debug $ LogLookupPersistentKey (T.pack $ show k)
+        f <- MaybeT $ pure $ lookupKeyMap (newKey k) pmap
+        (dv,del,ver) <- MaybeT $ runReaderT (runQueryT $ f file) s
+        MaybeT $ pure $ (,del,ver) <$> fromDynamic dv
+    for mv $ \(v,del,mbVer) -> do
+        actual_version <- case mbVer of
+          Just ver -> pure (Just $ VFSVersion ver)
+          Nothing -> (Just . ModificationTime <$> getModTime (fromNormalizedFilePath file))
+                      `catch` (\(_ :: IOException) -> pure Nothing)
+        pure (v, del, actual_version)
+
+-- | The rule for the key has run for the file at least once, with or without
+-- a result.
+hasRun :: Shake.ShakeValue k => k -> NormalizedFilePath -> Query Bool
+hasRun key file = do
+    ShakeExtras{state} <- ask
+    liftIO $ atomicallyNamed "hasRun" $ isJust <$> STM.lookup (toKey key file) state
 
 mappingForVersion
     :: STM.Map NormalizedUri (EnumMap Int32 (a, PositionMapping))
@@ -482,14 +536,6 @@ mappingForVersion allMappings file (Just (VFSVersion ver)) = do
     mapping <- STM.lookup (filePathToUri' file) allMappings
     return $ maybe zeroMapping snd $ EM.lookup ver =<< mapping
 mappingForVersion _ _ _ = pure zeroMapping
-
-type IdeRule k v =
-  ( Shake.RuleResult k ~ v
-  , Shake.ShakeValue k
-  , Show v
-  , Typeable v
-  , NFData v
-  )
 
 -- | A live Shake session with the ability to enqueue Actions for running.
 --   Keeps the 'ShakeDatabase' open, so at most one 'ShakeSession' per database.
@@ -674,6 +720,7 @@ shakeOpen recorder lspEnv defaultConfig idePlugins debouncer
         knownTargetsVar <- newTVarIO $ hashed emptyKnownTargets
         let restartShakeSession = shakeRestart recorder ideState
         persistentKeys <- newTVarIO mempty
+        persistedValues <- STM.newIO
         indexPending <- newTVarIO HMap.empty
         indexCompleted <- newTVarIO 0
         semanticTokensId <- newTVarIO 0
@@ -778,11 +825,19 @@ mkDelayedAction = DelayedAction Nothing
 
 -- | These actions are run asynchronously after the current action is
 -- finished running. For example, to trigger a key build after a rule
--- has already finished as is the case with useWithStaleFast
-delayedAction :: DelayedAction a -> IdeAction (IO a)
+-- has already finished as is the case with 'Development.IDE.Core.Use.request'
+delayedAction :: DelayedAction a -> Query (IO a)
 delayedAction a = do
   extras <- ask
   liftIO $ shakeEnqueue extras a
+
+newtype Pending a = Pending (IO a)
+
+enqueue :: String -> Action a -> Query (Pending a)
+enqueue herald act = Pending <$> delayedAction (mkDelayedAction herald Logger.Debug act)
+
+wait :: Pending a -> Query a
+wait (Pending a) = liftIO a
 
 
 -- | Restart the current 'ShakeSession' with the given system actions.
@@ -902,7 +957,7 @@ newSession recorder extras@ShakeExtras{..} vfsMod shakeDb acts reason = do
     -- run the wrap up in a separate thread since it contains interruptible
     -- commands (and we are not using uninterruptible mask)
     -- TODO: can possibly swallow exceptions?
-    _ <- async $ join $ wait workThread
+    _ <- async $ join $ Async.wait workThread
 
     --  Cancelling is required to flush the Shake database when either
     --  the filesystem or the Ghc configuration have changed
@@ -1005,15 +1060,28 @@ preservedKeys checkParents = HSet.fromList $
     | checkParents /= NeverCheck
     ]
 
--- | IdeActions are used when we want to return a result immediately, even if it
--- is stale Useful for UI actions like hover, completion where we don't want to
--- block.
+-- | Query is useful when we want to return a result immediately, even if
+-- it is stale. Useful for UI actions like hover, completion where we don't
+-- want to block. Reads the store and queues builds.
 --
--- Run via 'runIdeAction'.
-newtype IdeAction a = IdeAction { runIdeActionT  :: (ReaderT ShakeExtras IO) a }
+-- Run via 'Development.IDE.Core.Use.runQuery'.
+newtype Query a = Query { runQueryT  :: (ReaderT ShakeExtras IO) a }
     deriving newtype (MonadReader ShakeExtras, MonadIO, Functor, Applicative, Monad, Semigroup)
 
-askShake :: IdeAction ShakeExtras
+instance MonadBase Query Query where
+    liftBase = id
+
+-- | 'Development.IDE.Core.Use.runQuery' catches this, and fails the caller
+-- with the error.
+newtype QueryFailed = QueryFailed PluginError
+instance Show QueryFailed where
+    show (QueryFailed e) = show (pretty e)
+instance Exception QueryFailed
+
+instance MonadPluginFail Query where
+    pluginFailed = liftIO . throwIO . QueryFailed
+
+askShake :: Query ShakeExtras
 askShake = ask
 
 mkUpdater :: NameCache -> NameCacheUpdater

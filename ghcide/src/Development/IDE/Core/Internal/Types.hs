@@ -1,19 +1,60 @@
--- | Failures of rule and handler code.
+{-# LANGUAGE TypeFamilies #-}
+-- | Keys of rules with their scope, and failures of rule and handler code.
 module Development.IDE.Core.Internal.Types
-  ( MonadPluginFail (..)
+  ( -- * Keys
+    IdeRule
+  , Key (..)
+  , Project (..)
+  , IsScope (..)
+    -- * Failures
+  , MonadPluginFail (..)
   , required
   , BadDependency (..)
   ) where
 
-import           Control.Exception          (Exception, throwIO)
-import           Control.Monad.IO.Class     (liftIO)
-import           Control.Monad.Trans.Except (ExceptT, throwE)
-import           Control.Monad.Trans.Maybe  (MaybeT (..))
-import qualified Data.Text                  as T
-import           Development.IDE.Graph      (Action)
-import           Ide.Logger                 (layoutCompact, pretty,
-                                             renderStrict)
-import           Ide.Plugin.Error           (PluginError (..))
+import           Control.DeepSeq                (NFData)
+import           Control.Exception              (Exception, throwIO)
+import           Control.Monad.IO.Class         (liftIO)
+import           Control.Monad.Trans.Except     (ExceptT, throwE)
+import           Control.Monad.Trans.Maybe      (MaybeT (..))
+import qualified Data.Text                      as T
+import           Data.Typeable                  (Typeable)
+import           Development.IDE.Graph          (Action, RuleResult, ShakeValue)
+import           Development.IDE.Types.Location (NormalizedFilePath,
+                                                 emptyFilePath)
+import           Ide.Logger                     (layoutCompact, pretty,
+                                                 renderStrict)
+import           Ide.Plugin.Error               (PluginError (..))
+
+type IdeRule k v =
+  ( RuleResult k ~ v
+  , ShakeValue k
+  , Show v
+  , Typeable v
+  , NFData v
+  )
+
+-- | The scope of a key that has one value for the whole project.
+data Project = Project
+
+class IsScope s where
+  scopeFile :: s -> NormalizedFilePath
+
+instance IsScope NormalizedFilePath where
+  scopeFile = id
+
+instance IsScope Project where
+  scopeFile _ = emptyFilePath
+
+-- | A key that can be read, for each file or for the whole 'Project':
+--
+-- @
+-- instance Key GetKnownTargets where
+--   type Scope GetKnownTargets = Project
+-- @
+class (IdeRule k (RuleResult k), IsScope (Scope k)) => Key k where
+  type Scope k
+  type Scope k = NormalizedFilePath
 
 -- | When we depend on something that reported an error, and we fail as a direct result, throw BadDependency
 --   which short-circuits the rest of the action
@@ -21,8 +62,6 @@ newtype BadDependency = BadDependency String deriving Show
 instance Exception BadDependency
 
 -- | Monads that can fail with a 'PluginError'.
---
--- NB: Plain 'Query' has no instance, failing there results in a internal error.
 class Monad m => MonadPluginFail m where
   pluginFailed :: PluginError -> m a
 
