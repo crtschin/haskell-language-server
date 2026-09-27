@@ -24,7 +24,10 @@ import           Development.IDE                      (Action,
                                                        Range (Range), Recorder,
                                                        WithPriority,
                                                        cmapWithPrio)
-import           Development.IDE.Core.PluginUtils
+import           Development.IDE.Core.Compat          (fromCurrentPositionE,
+                                                       runActionE,
+                                                       runIdeActionE, useE,
+                                                       useWithStaleFastE)
 import           Development.IDE.Core.PositionMapping (PositionMapping,
                                                        toCurrentRange)
 import           Ide.Logger                           (Pretty (..))

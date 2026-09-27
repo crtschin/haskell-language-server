@@ -7,28 +7,28 @@
 
 module Ide.Plugin.Class.Types where
 
-import           Control.DeepSeq                  (rwhnf)
-import           Control.Monad.Extra              (mapMaybeM)
-import           Control.Monad.IO.Class           (liftIO)
-import           Control.Monad.Trans.Maybe        (runMaybeT)
+import           Control.DeepSeq                 (rwhnf)
+import           Control.Monad.Extra             (mapMaybeM)
+import           Control.Monad.IO.Class          (liftIO)
+import           Control.Monad.Trans.Maybe       (runMaybeT)
 import           Data.Aeson
-import qualified Data.IntMap                      as IntMap
-import           Data.Maybe                       (fromMaybe, listToMaybe,
-                                                   mapMaybe, maybeToList)
-import qualified Data.Text                        as T
-import           Data.Unique                      (hashUnique, newUnique)
+import qualified Data.IntMap                     as IntMap
+import           Data.Maybe                      (fromMaybe, listToMaybe,
+                                                  mapMaybe, maybeToList)
+import qualified Data.Text                       as T
+import           Data.Unique                     (hashUnique, newUnique)
 import           Development.IDE
-import           Development.IDE.Core.PluginUtils (useMT)
-import qualified Development.IDE.Core.Shake       as Shake
-import           Development.IDE.GHC.Compat       hiding (newUnique, (<+>))
-import           Development.IDE.GHC.Compat.Util  (bagToList)
+import           Development.IDE.Core.Compat     (useMT)
+import qualified Development.IDE.Core.Shake      as Shake
+import           Development.IDE.GHC.Compat      hiding (newUnique, (<+>))
+import           Development.IDE.GHC.Compat.Util (bagToList)
 import           Development.IDE.Graph.Classes
 import           GHC.Generics
 import           Ide.Plugin.Class.Utils
-import qualified Ide.Plugin.RangeMap              as RangeMap
+import qualified Ide.Plugin.RangeMap             as RangeMap
 import           Ide.Types
-import           Language.LSP.Protocol.Types      (TextEdit,
-                                                   VersionedTextDocumentIdentifier)
+import           Language.LSP.Protocol.Types     (TextEdit,
+                                                  VersionedTextDocumentIdentifier)
 
 typeLensCommandId :: CommandId
 typeLensCommandId = "classplugin.typelens"

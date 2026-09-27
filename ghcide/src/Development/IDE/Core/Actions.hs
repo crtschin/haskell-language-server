@@ -17,9 +17,9 @@ import qualified Data.HashMap.Strict                  as HM
 import           Data.Maybe
 import qualified Data.Text                            as T
 import           Data.Tuple.Extra
+import           Development.IDE.Core.Compat          (useWithStaleFastMT)
 import           Development.IDE.Core.LookupMod       (lookupMod)
 import           Development.IDE.Core.OfInterest
-import           Development.IDE.Core.PluginUtils
 import           Development.IDE.Core.PositionMapping
 import           Development.IDE.Core.RuleTypes
 import           Development.IDE.Core.Service

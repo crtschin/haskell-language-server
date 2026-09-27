@@ -19,10 +19,10 @@ import qualified Data.Text                                     as T
 import qualified Data.Text.Encoding                            as T
 import qualified Data.Text.IO                                  as Text
 import qualified Data.Text.Utf16.Rope.Mixed                    as Rope
+import           Development.IDE.Core.Compat                   (runActionE,
+                                                                useE)
 import           Development.IDE.Core.FileStore                (getUriContents,
                                                                 getVersionedTextDoc)
-import           Development.IDE.Core.PluginUtils              (runActionE,
-                                                                useE)
 import qualified Development.IDE.Core.Shake                    as Shake
 import           Development.IDE.Types.Location                (toNormalizedUri)
 import qualified Distribution.Client.Add                       as Add

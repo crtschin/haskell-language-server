@@ -10,7 +10,8 @@ import qualified Data.IntMap.Strict                   as IntMap
 import           Data.Maybe                           (mapMaybe, maybeToList)
 import qualified Data.Text                            as T
 import           Development.IDE
-import           Development.IDE.Core.PluginUtils
+import           Development.IDE.Core.Compat          (runActionE,
+                                                       useWithStaleE)
 import           Development.IDE.Core.PositionMapping
 import           Development.IDE.GHC.Compat
 import           Development.IDE.Spans.Pragmas        (getFirstPragma,

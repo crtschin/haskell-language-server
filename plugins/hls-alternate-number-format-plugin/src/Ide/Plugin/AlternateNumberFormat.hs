@@ -2,35 +2,33 @@
 {-# LANGUAGE TypeFamilies #-}
 module Ide.Plugin.AlternateNumberFormat (descriptor, Log(..)) where
 
-import           Control.Lens                     ((^.))
-import           Control.Monad.Except             (ExceptT)
-import           Control.Monad.IO.Class           (MonadIO)
-import qualified Data.Map                         as Map
-import           Data.Text                        (Text, unpack)
-import qualified Data.Text                        as T
-import           Development.IDE                  (GetParsedModule (GetParsedModule),
-                                                   IdeState, RuleResult, Rules,
-                                                   define, realSrcSpanToRange,
-                                                   use)
-import           Development.IDE.Core.PluginUtils
-import qualified Development.IDE.Core.Shake       as Shake
-import           Development.IDE.GHC.Compat       hiding (getSrcSpan)
-import           Development.IDE.GHC.Util         (getExtensions)
-import           Development.IDE.Graph.Classes    (Hashable, NFData, rnf)
-import           Development.IDE.Spans.Pragmas    (NextPragmaInfo,
-                                                   getFirstPragma,
-                                                   insertNewPragma)
-import           GHC.Generics                     (Generic)
-import           Ide.Logger                       as Logger
-import           Ide.Plugin.Conversion            (AlternateFormat,
-                                                   ExtensionNeeded (..),
-                                                   alternateFormat)
+import           Control.Lens                  ((^.))
+import           Control.Monad.Except          (ExceptT)
+import           Control.Monad.IO.Class        (MonadIO)
+import qualified Data.Map                      as Map
+import           Data.Text                     (Text, unpack)
+import qualified Data.Text                     as T
+import           Development.IDE               (GetParsedModule (GetParsedModule),
+                                                IdeState, RuleResult, Rules,
+                                                define, realSrcSpanToRange, use)
+import           Development.IDE.Core.Compat   (runActionE, useE)
+import qualified Development.IDE.Core.Shake    as Shake
+import           Development.IDE.GHC.Compat    hiding (getSrcSpan)
+import           Development.IDE.GHC.Util      (getExtensions)
+import           Development.IDE.Graph.Classes (Hashable, NFData, rnf)
+import           Development.IDE.Spans.Pragmas (NextPragmaInfo, getFirstPragma,
+                                                insertNewPragma)
+import           GHC.Generics                  (Generic)
+import           Ide.Logger                    as Logger
+import           Ide.Plugin.Conversion         (AlternateFormat,
+                                                ExtensionNeeded (..),
+                                                alternateFormat)
 import           Ide.Plugin.Error
 import           Ide.Plugin.Literals
-import           Ide.Plugin.RangeMap              (RangeMap)
-import qualified Ide.Plugin.RangeMap              as RangeMap
+import           Ide.Plugin.RangeMap           (RangeMap)
+import qualified Ide.Plugin.RangeMap           as RangeMap
 import           Ide.Types
-import qualified Language.LSP.Protocol.Lens       as L
+import qualified Language.LSP.Protocol.Lens    as L
 import           Language.LSP.Protocol.Message
 import           Language.LSP.Protocol.Types
 

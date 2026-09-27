@@ -6,30 +6,29 @@
 {-# LANGUAGE ViewPatterns      #-}
 module Ide.Plugin.GADT (descriptor) where
 
-import           Control.Lens                     ((^.))
+import           Control.Lens                  ((^.))
 
-import           Control.Monad.Error.Class        (MonadError (throwError),
-                                                   liftEither)
-import           Control.Monad.IO.Class           (MonadIO)
-import           Control.Monad.Trans.Class        (MonadTrans (lift))
-import           Control.Monad.Trans.Except       (ExceptT, withExceptT)
-import           Data.Aeson                       (FromJSON, ToJSON, toJSON)
-import           Data.Either.Extra                (maybeToEither)
-import qualified Data.Map                         as Map
-import qualified Data.Text                        as T
+import           Control.Monad.Error.Class     (MonadError (throwError),
+                                                liftEither)
+import           Control.Monad.IO.Class        (MonadIO)
+import           Control.Monad.Trans.Class     (MonadTrans (lift))
+import           Control.Monad.Trans.Except    (ExceptT, withExceptT)
+import           Data.Aeson                    (FromJSON, ToJSON, toJSON)
+import           Data.Either.Extra             (maybeToEither)
+import qualified Data.Map                      as Map
+import qualified Data.Text                     as T
 import           Development.IDE
 import           Development.IDE.GHC.Compat
 
-import           Data.Maybe                       (mapMaybe)
-import           Development.IDE.Core.PluginUtils
-import           Development.IDE.Spans.Pragmas    (getFirstPragma,
-                                                   insertNewPragma)
-import           GHC.Generics                     (Generic)
+import           Data.Maybe                    (mapMaybe)
+import           Development.IDE.Core.Compat   (runActionE, useE)
+import           Development.IDE.Spans.Pragmas (getFirstPragma, insertNewPragma)
+import           GHC.Generics                  (Generic)
 import           Ide.Plugin.Error
 import           Ide.Plugin.GHC
 import           Ide.PluginUtils
 import           Ide.Types
-import qualified Language.LSP.Protocol.Lens       as L
+import qualified Language.LSP.Protocol.Lens    as L
 import           Language.LSP.Protocol.Message
 import           Language.LSP.Protocol.Types
 

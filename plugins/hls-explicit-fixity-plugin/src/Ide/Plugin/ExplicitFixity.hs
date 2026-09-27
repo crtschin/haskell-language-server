@@ -18,7 +18,8 @@ import qualified Data.Set                             as S
 import qualified Data.Text                            as T
 import           Development.IDE                      hiding (pluginHandlers,
                                                        pluginRules)
-import           Development.IDE.Core.PluginUtils
+import           Development.IDE.Core.Compat          (runIdeActionE,
+                                                       useWithStaleFastE)
 import           Development.IDE.Core.PositionMapping (idDelta)
 import           Development.IDE.Core.Shake           (addPersistentRule)
 import qualified Development.IDE.Core.Shake           as Shake
