@@ -34,7 +34,7 @@ module Development.IDE.Core.Internal.Shake(
     newSession,
     delayedAction,
     Pending, enqueue, wait,
-    lastValueIO, peekLastValue, useWithoutDependency, getValues, hasRun,
+    lastValueIO, peekLastValue, useWithoutDependency, hasRun,
     BadDependency(..),
     defineRule,
     getDiagnostics,
