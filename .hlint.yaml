@@ -111,6 +111,86 @@
     - Ide.Plugin.Rename
     - Compat.HieBin
 
+  # The old rule API. New code uses Development.IDE.Core.API. Remove a module
+  # when it migrates.
+  - name: define
+    within: &oldRuleApi
+    - CompletionTests
+    - Config
+    - Development.IDE
+    - Development.IDE.Core.Actions
+    - Development.IDE.Core.Compat
+    - Development.IDE.Core.FileExists
+    - Development.IDE.Core.FileStore
+    - Development.IDE.Core.Internal.Shake
+    - Development.IDE.Core.OfInterest
+    - Development.IDE.Core.RuleTypes
+    - Development.IDE.Core.Rules
+    - Development.IDE.Core.Shake
+    - Development.IDE.GHC.ExactPrint
+    - Development.IDE.LSP.Outline
+    - Development.IDE.Plugin.Completions
+    - Development.IDE.Plugin.TypeLenses
+    - Development.IDE.Spans.AtPoint
+    - Development.IDE.Spans.Pragmas
+    - HaddockTests
+    - Ide.Plugin.AlternateNumberFormat
+    - Ide.Plugin.Cabal
+    - Ide.Plugin.Cabal.CabalAdd.Command
+    - Ide.Plugin.Cabal.CabalAdd.Rename
+    - Ide.Plugin.Cabal.Definition
+    - Ide.Plugin.Cabal.OfInterest
+    - Ide.Plugin.Cabal.Outline
+    - Ide.Plugin.Cabal.Rules
+    - Ide.Plugin.CaseSplit
+    - Ide.Plugin.ChangeTypeSignature
+    - Ide.Plugin.Class.CodeAction
+    - Ide.Plugin.Class.CodeLens
+    - Ide.Plugin.Class.Types
+    - Ide.Plugin.Class.Utils
+    - Ide.Plugin.CodeRange
+    - Ide.Plugin.CodeRange.Rules
+    - Ide.Plugin.Eval.Handlers
+    - Ide.Plugin.Eval.Rules
+    - Ide.Plugin.ExplicitFields
+    - Ide.Plugin.ExplicitFixity
+    - Ide.Plugin.ExplicitImports
+    - Ide.Plugin.Export
+    - Ide.Plugin.GADT
+    - Ide.Plugin.Hlint
+    - Ide.Plugin.Notes
+    - Ide.Plugin.OverloadedRecordDot
+    - Ide.Plugin.Pragmas
+    - Ide.Plugin.QualifyImportedNames
+    - Ide.Plugin.Rename
+    - Ide.Plugin.Rename.ModuleName
+    - Ide.Plugin.SemanticTokens.Internal
+    - Ide.Plugin.SignatureHelp
+    - Ide.Plugin.Splice
+    - Ide.Plugin.Stan
+    - Ide.Plugin.StylishHaskell
+    - ReferenceTests
+  - {name: defineNoDiagnostics, within: *oldRuleApi}
+  - {name: defineEarlyCutoff, within: *oldRuleApi}
+  - {name: defineNoFile, within: *oldRuleApi}
+  - {name: defineEarlyCutOffNoFile, within: *oldRuleApi}
+  - {name: useNoFile, within: *oldRuleApi}
+  - {name: useNoFile_, within: *oldRuleApi}
+  - {name: useWithStale, within: *oldRuleApi}
+  - {name: useWithStale_, within: *oldRuleApi}
+  - {name: usesWithStale, within: *oldRuleApi}
+  - {name: usesWithStale_, within: *oldRuleApi}
+  - {name: useWithStaleFast, within: *oldRuleApi}
+  - {name: "useWithStaleFast'", within: *oldRuleApi}
+  - {name: useE, within: *oldRuleApi}
+  - {name: useMT, within: *oldRuleApi}
+  - {name: usesE, within: *oldRuleApi}
+  - {name: usesMT, within: *oldRuleApi}
+  - {name: useWithStaleE, within: *oldRuleApi}
+  - {name: useWithStaleMT, within: *oldRuleApi}
+  - {name: useWithStaleFastE, within: *oldRuleApi}
+  - {name: useWithStaleFastMT, within: *oldRuleApi}
+
   # Partial functions
 
   # We need to check fucntions which
