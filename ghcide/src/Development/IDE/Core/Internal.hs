@@ -13,20 +13,20 @@ module Development.IDE.Core.Internal
     -- * Shake core
   , BadDependency (..)
   , IdeRule
-  , IdeResult
   , Q (..)
+  , Query (..)
+  , QueryFailed (..)
   , ShakeExtras (..)
   , getShakeExtras
   , hasRun
-  , getValues
-  , askShake
-  , Query (..)
-  , IdeState (..)
   , Log (..)
+  , IdeResult
+  , IdeState (..)
   , mRunLspT
     -- * Tracked values
   , Tracked (..)
   , tracked
+  , untracked
   ) where
 
 import           Development.IDE.Core.Internal.Shake

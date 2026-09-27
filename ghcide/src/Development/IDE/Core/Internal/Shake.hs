@@ -33,7 +33,7 @@ module Development.IDE.Core.Internal.Shake(
     shakeEnqueue,
     newSession,
     delayedAction,
-    lastValueIO, useWithoutDependency, getValues, hasRun,
+    lastValueIO, useWithoutDependency, hasRun,
     BadDependency(..),
     defineRule, DiagnosticSink(..),
     getDiagnostics,
