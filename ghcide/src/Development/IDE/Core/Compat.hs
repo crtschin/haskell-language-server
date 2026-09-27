@@ -57,6 +57,7 @@ module Development.IDE.Core.Compat
   , defineEarlyCutOffNoFile
   ) where
 
+import           Control.Lens                         (Bifunctor(..))
 import           Control.Monad                        (join, void, when)
 import           Control.Monad.IO.Class
 import           Control.Monad.Reader                 (ReaderT, ask, runReaderT)
@@ -64,7 +65,6 @@ import           Control.Monad.Trans.Except
 import           Control.Monad.Trans.Maybe
 import           Data.Aeson                           (Result (Success), toJSON)
 import qualified Data.Aeson.Types                     as A
-import           Data.Bifunctor                       (second)
 import qualified Data.ByteString.Char8                as BS
 import           Data.Default                         (def)
 import           Data.Foldable                        (find)
@@ -73,12 +73,11 @@ import           Data.Hashable                        (unhashed)
 import           Data.Maybe                           (fromMaybe)
 import           Data.Proxy                           (Proxy)
 import qualified Data.Text                            as T
-import           Development.IDE.Core.Internal        (DiagnosticSink (..),
-                                                       IdeResult, IdeRule,
+import           Development.IDE.Core.Internal        (IdeResult, IdeRule,
                                                        IdeState (shakeExtras),
                                                        Log (..), Query (..),
-                                                       ShakeExtras (..),
                                                        defineRule,
+                                                       ShakeExtras (..),
                                                        getShakeExtras, mRunLspT,
                                                        mkDelayedAction,
                                                        shakeEnqueue, untracked,
@@ -378,14 +377,13 @@ defineNoDiagnostics recorder op = defineEarlyCutoff recorder $ RuleNoDiagnostics
 -- fingerprint has changed.
 defineEarlyCutoff :: IdeRule k v => Recorder (WithPriority Log) -> RuleBody k v -> Rules ()
 defineEarlyCutoff recorder = \case
-  Rule op -> defineRule recorder Publish (==) $ \k f _ -> op k f
-  RuleNoDiagnostics op ->
-    defineRule recorder (LogAs (const LogDefineEarlyCutoffRuleNoDiagHasDiag)) (==) $ \k f _ ->
-      second (mempty,) <$> op k f
+  Rule op -> defineRule recorder True (==) $ \k f _ -> op k f
+  RuleNoDiagnostics op -> defineRule recorder False (==) $ \k f _ -> quiet <$> op k f
   RuleWithCustomNewnessCheck{..} ->
-    defineRule recorder (LogAs (const LogDefineEarlyCutoffRuleCustomNewnessHasDiag)) newnessCheck $ \k f _ ->
-      second (mempty,) <$> build k f
-  RuleWithOldValue op -> defineRule recorder Publish (==) op
+    defineRule recorder False newnessCheck $ \k f _ -> quiet <$> build k f
+  RuleWithOldValue op -> defineRule recorder True (==) op
+  where
+    quiet (fp, r) = (fp, ([], r))
 
 defineNoFile :: IdeRule k v => Recorder (WithPriority Log) -> (k -> Action v) -> Rules ()
 defineNoFile recorder f = defineNoDiagnostics recorder $ \k file ->
@@ -397,5 +395,5 @@ defineEarlyCutOffNoFile
   :: IdeRule k v => Recorder (WithPriority Log) -> (k -> Action (BS.ByteString, v)) -> Rules ()
 defineEarlyCutOffNoFile recorder f = defineEarlyCutoff recorder $ RuleNoDiagnostics $ \k file ->
   if file == noFile
-    then (\(fp, res) -> (Just fp, Just res)) <$> f k
+    then bimap Just Just <$> f k
     else fail $ "Rule " ++ show k ++ " should always be called with the empty string for a file"

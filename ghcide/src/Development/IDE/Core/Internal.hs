@@ -9,7 +9,6 @@ module Development.IDE.Core.Internal
   , shakeEnqueue
     -- * Rule definition with an explicit policy
   , defineRule
-  , DiagnosticSink (..)
     -- * Shake core
   , BadDependency (..)
   , IdeRule

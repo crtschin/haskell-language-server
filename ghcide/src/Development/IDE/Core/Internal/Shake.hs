@@ -35,7 +35,7 @@ module Development.IDE.Core.Internal.Shake(
     delayedAction,
     lastValueIO, useWithoutDependency, hasRun,
     BadDependency(..),
-    defineRule, DiagnosticSink(..),
+    defineRule,
     getDiagnostics,
     mRunLspT, mRunLspTCallback,
     getHiddenDiagnostics,
@@ -191,8 +191,6 @@ data Log
   | LogDelayedAction !(DelayedAction ()) !Seconds
   | LogBuildSessionFinish !(Maybe SomeException)
   | LogDiagsDiffButNoLspEnv ![FileDiagnostic]
-  | LogDefineEarlyCutoffRuleNoDiagHasDiag !FileDiagnostic
-  | LogDefineEarlyCutoffRuleCustomNewnessHasDiag !FileDiagnostic
   | LogRuleDoesNotPublishDiagnostics !T.Text !FileDiagnostic
   | LogCancelledAction !T.Text
   | LogSessionInitialised
@@ -226,12 +224,6 @@ instance Pretty Log where
     LogDiagsDiffButNoLspEnv fileDiagnostics ->
       "updateFileDiagnostics published different from new diagnostics - file diagnostics:"
       <+> pretty (showDiagnosticsColored fileDiagnostics)
-    LogDefineEarlyCutoffRuleNoDiagHasDiag fileDiagnostic ->
-      "defineEarlyCutoff RuleNoDiagnostics - file diagnostic:"
-      <+> pretty (showDiagnosticsColored [fileDiagnostic])
-    LogDefineEarlyCutoffRuleCustomNewnessHasDiag fileDiagnostic ->
-      "defineEarlyCutoff RuleWithCustomNewnessCheck - file diagnostic:"
-      <+> pretty (showDiagnosticsColored [fileDiagnostic])
     LogRuleDoesNotPublishDiagnostics key fileDiagnostic ->
       "Rule" <+> pretty key <+> "does not publish diagnostics - file diagnostic:"
       <+> pretty (showDiagnosticsColored [fileDiagnostic])
@@ -1056,29 +1048,23 @@ useWithoutDependency :: IdeRule k v
 useWithoutDependency key file =
     (\(Identity (A value)) -> currentValue value) <$> applyWithoutDependency (Identity (Q (key, file)))
 
--- | Where the diagnostics of a rule go. Publishing an empty list clears the
--- diagnostics of the key, so a rule that does not publish logs them instead.
-data DiagnosticSink
-    = Publish
-    | LogAs (T.Text -> FileDiagnostic -> Log)
-    -- ^ receives the rendered key
-
 -- | The primitive under every @define*@ variant.
 defineRule
     :: IdeRule k v
     => Recorder (WithPriority Log)
-    -> DiagnosticSink
+    -> Bool
+    -- ^ publish the diagnostics, otherwise log them
     -> (BS.ByteString -> BS.ByteString -> Bool)
     -- ^ the new fingerprint counts as unchanged relative to the old one
     -> (k -> NormalizedFilePath -> Value v -> Action (Maybe BS.ByteString, IdeResult v))
     -> Rules ()
-defineRule recorder sink unchanged op = addRule $ \(Q (key, file)) (old :: Maybe BS.ByteString) mode -> otTracedAction key file mode traceA $ \traceDiagnostics -> do
+defineRule recorder publishesDiagnostics unchanged op = addRule $ \(Q (key, file)) (old :: Maybe BS.ByteString) mode -> otTracedAction key file mode traceA $ \traceDiagnostics -> do
     extras <- getShakeExtras
     let diagnostics ver diags = do
             traceDiagnostics diags
-            case sink of
-              Publish  -> updateFileDiagnostics recorder file ver (newKey key) extras diags
-              LogAs mk -> mapM_ (logWith recorder Warning . mk (T.pack (show key))) diags
+            if publishesDiagnostics
+              then updateFileDiagnostics recorder file ver (newKey key) extras diags
+              else mapM_ (logWith recorder Warning . LogRuleDoesNotPublishDiagnostics (T.pack (show key))) diags
     defineEarlyCutoff' diagnostics unchanged key file old mode $ op key file
 
 defineEarlyCutoff'

@@ -178,13 +178,10 @@ registerRule
   => Bool -> FingerprintCheck -> (k -> NormalizedFilePath -> Value v -> Action (Output p v)) -> Rules ()
 registerRule publishes (FingerprintCheck unchanged) body = do
   ShakeExtras{shakeRecorder} <- getShakeExtrasRules
-  defineRule shakeRecorder sink unchanged $ \k file old -> do
+  defineRule shakeRecorder publishes unchanged $ \k file old -> do
     Output{..} <- body k file old
     pure (fp cutoff, (diagnostics, result))
   where
-    sink
-      | publishes = Publish
-      | otherwise = LogAs LogRuleDoesNotPublishDiagnostics
     fp AlwaysRerun       = Nothing
     fp (RerunOnChange f) = Just f
 
