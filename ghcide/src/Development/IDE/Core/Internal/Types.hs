@@ -1,11 +1,18 @@
-{-# LANGUAGE TypeFamilies #-}
--- | Keys of rules with their scope, and failures of rule and handler code.
+{-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE TypeData               #-}
+{-# LANGUAGE TypeFamilies           #-}
+-- | Keys of rules with their scope and diagnostics, and failures of rule and
+-- handler code.
 module Development.IDE.Core.Internal.Types
   ( -- * Keys
     IdeRule
   , Key (..)
   , Project (..)
   , IsScope (..)
+    -- * Diagnostics
+  , type Publishing (..)
+  , KnownPublishing (..)
+  , RuleDiagnostics
     -- * Failures
   , MonadPluginFail (..)
   , required
@@ -14,9 +21,11 @@ module Development.IDE.Core.Internal.Types
 
 import           Control.DeepSeq                (NFData)
 import           Control.Exception              (Exception, throwIO)
+import           Control.Monad                  (guard)
 import           Control.Monad.IO.Class         (liftIO)
 import           Control.Monad.Trans.Except     (ExceptT, throwE)
 import           Control.Monad.Trans.Maybe      (MaybeT (..))
+import           Data.Proxy                     (Proxy)
 import qualified Data.Text                      as T
 import           Data.Typeable                  (Typeable)
 import           Development.IDE.Graph          (Action, RuleResult, ShakeValue)
@@ -39,12 +48,15 @@ data Project = Project
 
 class IsScope s where
   scopeFile :: s -> NormalizedFilePath
+  fromFile  :: NormalizedFilePath -> Maybe s
 
 instance IsScope NormalizedFilePath where
   scopeFile = id
+  fromFile  = Just
 
 instance IsScope Project where
   scopeFile _ = emptyFilePath
+  fromFile f  = Project <$ guard (f == emptyFilePath)
 
 -- | A key that can be read, for each file or for the whole 'Project':
 --
@@ -55,6 +67,26 @@ instance IsScope Project where
 class (IdeRule k (RuleResult k), IsScope (Scope k)) => Key k where
   type Scope k
   type Scope k = NormalizedFilePath
+
+-- | Whether a rule publishes diagnostics.
+type data Publishing = Publishes | Quiet
+
+class KnownPublishing (p :: Publishing) where
+  publishes :: Proxy p -> Bool
+
+instance KnownPublishing Publishes where
+  publishes _ = True
+
+instance KnownPublishing Quiet where
+  publishes _ = False
+
+-- | Declares whether the rule of the key @k@ publishes diagnostics:
+--
+-- @
+-- data GetModIface = GetModIface
+--   deriving anyclass (RuleDiagnostics Quiet)
+-- @
+class KnownPublishing p => RuleDiagnostics (p :: Publishing) k | k -> p
 
 -- | When we depend on something that reported an error, and we fail as a direct result, throw BadDependency
 --   which short-circuits the rest of the action
