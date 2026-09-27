@@ -33,7 +33,7 @@ module Development.IDE.Core.Internal.Shake(
     shakeEnqueue,
     newSession,
     delayedAction,
-    lastValueIO, useWithoutDependency, getValues,
+    lastValueIO, useWithoutDependency, getValues, hasRun,
     BadDependency(..),
     defineRule, DiagnosticSink(..),
     getDiagnostics,
@@ -57,7 +57,8 @@ module Development.IDE.Core.Internal.Shake(
     WithProgressFunc, WithIndefiniteProgressFunc,
     ProgressEvent(..),
     DelayedAction, mkDelayedAction,
-    IdeAction(..),
+    Query(..),
+    QueryFailed(..),
     mkUpdater,
     -- Exposed for testing.
     Q(..),
@@ -83,6 +84,7 @@ import           Control.Exception.Extra                hiding (bracket_)
 import           Control.Exception.Context              (displayExceptionContext)
 #endif
 import           Control.Lens                           ((%~), (&), (?~))
+import           Control.Monad.Base                     (MonadBase (..))
 import           Control.Monad.Extra
 import           Control.Monad.IO.Class
 import           Control.Monad.Reader
@@ -344,7 +346,7 @@ type WithProgressFunc = forall a.
 type WithIndefiniteProgressFunc = forall a.
     T.Text -> LSP.ProgressCancellable -> IO a -> IO a
 
-type GetStalePersistent = NormalizedFilePath -> IdeAction (Maybe (Dynamic,PositionDelta,Maybe Int32))
+type GetStalePersistent = NormalizedFilePath -> Query (Maybe (Dynamic,PositionDelta,Maybe Int32))
 
 getShakeExtras :: Action ShakeExtras
 getShakeExtras = do
@@ -364,7 +366,7 @@ getShakeExtrasRules = do
 -- This is called when we don't already have a result, or computing the rule failed.
 -- The result of this function will always be marked as 'stale', and a 'proper' rebuild of the rule will
 -- be queued if the rule hasn't run before.
-addPersistentRule :: IdeRule k v => k -> (NormalizedFilePath -> IdeAction (Maybe (v,PositionDelta,Maybe Int32))) -> Rules ()
+addPersistentRule :: IdeRule k v => k -> (NormalizedFilePath -> Query (Maybe (v,PositionDelta,Maybe Int32))) -> Rules ()
 addPersistentRule k getVal = do
   ShakeExtras{persistentKeys} <- getShakeExtrasRules
   void $ liftIO $ atomically $ modifyTVar' persistentKeys $ insertKeyMap (newKey k) (fmap (fmap (first3 toDyn)) . getVal)
@@ -446,7 +448,7 @@ lastValueIO s@ShakeExtras{positionMapping,persistentKeys,state} k file = do
           mv <- runMaybeT $ do
             liftIO $ logWith (shakeRecorder s) Debug $ LogLookupPersistentKey (T.pack $ show k)
             f <- MaybeT $ pure $ lookupKeyMap (newKey k) pmap
-            (dv,del,ver) <- MaybeT $ runReaderT (runIdeActionT $ f file) s
+            (dv,del,ver) <- MaybeT $ runReaderT (runQueryT $ f file) s
             MaybeT $ pure $ (,del,ver) <$> fromDynamic dv
           case mv of
             Nothing -> atomicallyNamed "lastValueIO 1" $ do
@@ -478,6 +480,13 @@ lastValueIO s@ShakeExtras{positionMapping,persistentKeys,state} k file = do
             atomicallyNamed "lastValueIO 6"  $ Just . (v,) . maybe id addOldDelta del <$> mappingForVersion positionMapping file ver
         Failed p | not p -> readPersistent
         _ -> pure Nothing
+
+-- | The rule for the key has run for the file at least once, with or without
+-- a result.
+hasRun :: Shake.ShakeValue k => k -> NormalizedFilePath -> Query Bool
+hasRun key file = do
+    ShakeExtras{state} <- ask
+    liftIO $ atomicallyNamed "hasRun" $ isJust <$> STM.lookup (toKey key file) state
 
 mappingForVersion
     :: STM.Map NormalizedUri (EnumMap Int32 (a, PositionMapping))
@@ -784,8 +793,8 @@ mkDelayedAction = DelayedAction Nothing
 
 -- | These actions are run asynchronously after the current action is
 -- finished running. For example, to trigger a key build after a rule
--- has already finished as is the case with useWithStaleFast
-delayedAction :: DelayedAction a -> IdeAction (IO a)
+-- has already finished as is the case with 'Development.IDE.Core.Use.request'
+delayedAction :: DelayedAction a -> Query (IO a)
 delayedAction a = do
   extras <- ask
   liftIO $ shakeEnqueue extras a
@@ -1011,15 +1020,28 @@ preservedKeys checkParents = HSet.fromList $
     | checkParents /= NeverCheck
     ]
 
--- | IdeActions are used when we want to return a result immediately, even if it
--- is stale Useful for UI actions like hover, completion where we don't want to
--- block.
+-- | Query is useful when we want to return a result immediately, even if
+-- it is stale. Useful for UI actions like hover, completion where we don't
+-- want to block. Reads the store and queues builds.
 --
--- Run via 'runIdeAction'.
-newtype IdeAction a = IdeAction { runIdeActionT  :: (ReaderT ShakeExtras IO) a }
+-- Run via 'Development.IDE.Core.Use.runQuery'.
+newtype Query a = Query { runQueryT  :: (ReaderT ShakeExtras IO) a }
     deriving newtype (MonadReader ShakeExtras, MonadIO, Functor, Applicative, Monad, Semigroup)
 
-askShake :: IdeAction ShakeExtras
+instance MonadBase Query Query where
+    liftBase = id
+
+-- | 'Development.IDE.Core.Use.runQuery' catches this, and fails the caller
+-- with the error.
+newtype QueryFailed = QueryFailed PluginError
+instance Show QueryFailed where
+    show (QueryFailed e) = show (pretty e)
+instance Exception QueryFailed
+
+instance MonadPluginFail Query where
+    pluginFailed = liftIO . throwIO . QueryFailed
+
+askShake :: Query ShakeExtras
 askShake = ask
 
 mkUpdater :: NameCache -> NameCacheUpdater

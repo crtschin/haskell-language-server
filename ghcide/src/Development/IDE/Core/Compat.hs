@@ -13,6 +13,9 @@ module Development.IDE.Core.Compat
   , useWithStale_
   , usesWithStale_
     -- * Queries in handlers
+  , IdeAction
+  , pattern IdeAction
+  , runIdeActionT
   , useWithStaleFast
   , useWithStaleFast'
   , FastResult (..)
@@ -56,7 +59,7 @@ import           Control.Concurrent.STM.Stats         (atomicallyNamed)
 import           Control.Exception                    (throwIO)
 import           Control.Monad                        (join, void, when)
 import           Control.Monad.IO.Class
-import           Control.Monad.Reader                 (runReaderT)
+import           Control.Monad.Reader                 (ReaderT, runReaderT)
 import           Control.Monad.Trans.Except
 import           Control.Monad.Trans.Maybe
 import           Data.Aeson                           (Result (Success), toJSON)
@@ -169,6 +172,17 @@ usesWithStale_ key files = do
     case sequence res of
         Nothing -> liftIO $ throwIO $ BadDependency (show key)
         Just v  -> return v
+
+-- | IdeActions are used when we want to return a result immediately, even if it
+-- is stale Useful for UI actions like hover, completion where we don't want to
+-- block.
+--
+-- Run via 'runIdeAction'.
+type IdeAction = Query
+
+pattern IdeAction :: ReaderT ShakeExtras IO a -> IdeAction a
+pattern IdeAction {runIdeActionT} = Query runIdeActionT
+{-# COMPLETE IdeAction #-}
 
 runIdeAction :: String -> ShakeExtras -> IdeAction a -> IO a
 runIdeAction _herald s i = runReaderT (runIdeActionT i) s

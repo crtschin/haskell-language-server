@@ -17,12 +17,17 @@ module Development.IDE.Core.Internal
   , Q (..)
   , ShakeExtras (..)
   , getShakeExtras
+  , hasRun
   , getValues
   , askShake
-  , IdeAction (..)
+  , Query (..)
   , IdeState (..)
   , Log (..)
   , mRunLspT
+    -- * Tracked values
+  , Tracked (..)
+  , tracked
   ) where
 
 import           Development.IDE.Core.Internal.Shake
+import           Development.IDE.Core.Internal.Tracked
