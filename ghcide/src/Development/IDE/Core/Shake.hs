@@ -47,7 +47,7 @@ module Development.IDE.Core.Shake(
     WithProgressFunc, WithIndefiniteProgressFunc,
     ProgressEvent(..),
     DelayedAction, mkDelayedAction,
-    IdeAction(..), runIdeAction,
+    IdeAction, pattern IdeAction, runIdeActionT, runIdeAction,
     mkUpdater,
     -- Exposed for testing.
     Q(..),

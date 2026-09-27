@@ -21,8 +21,6 @@ newtype BadDependency = BadDependency String deriving Show
 instance Exception BadDependency
 
 -- | Monads that can fail with a 'PluginError'.
---
--- NB: Plain 'Query' has no instance, failing there results in a internal error.
 class Monad m => MonadPluginFail m where
   pluginFailed :: PluginError -> m a
 

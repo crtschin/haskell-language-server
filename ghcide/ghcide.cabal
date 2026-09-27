@@ -103,6 +103,7 @@ library
     , text-rope
     , time
     , transformers
+    , transformers-base
     , unliftio                     >=0.2.6
     , unliftio-core
     , unordered-containers         >=0.2.21
@@ -149,6 +150,7 @@ library
     Development.IDE.Core.Shake
     Development.IDE.Core.Text
     Development.IDE.Core.Tracing
+    Development.IDE.Core.Use
     Development.IDE.Core.WorkerThread
     Development.IDE.GHC.Compat
     Development.IDE.GHC.Compat.Core
