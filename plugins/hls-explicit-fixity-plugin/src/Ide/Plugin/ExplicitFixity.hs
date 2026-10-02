@@ -18,8 +18,9 @@ import qualified Data.Set                             as S
 import qualified Data.Text                            as T
 import           Development.IDE                      hiding (pluginHandlers,
                                                        pluginRules)
-import           Development.IDE.Core.Compat          (runIdeActionE,
-                                                       useWithStaleFastE)
+import           Development.IDE.Core.API             (Ageless, Tracked (..),
+                                                       rewind, runQuery,
+                                                       settle_, untrack)
 import           Development.IDE.Core.PositionMapping (idDelta)
 import           Development.IDE.Core.Shake           (addPersistentRule)
 import qualified Development.IDE.Core.Shake           as Shake
@@ -45,10 +46,10 @@ descriptor recorder pluginId = (defaultPluginDescriptor pluginId "Provides fixit
 hover :: PluginMethodHandler IdeState Method_TextDocumentHover
 hover state _ (HoverParams (TextDocumentIdentifier uri) pos _) = do
     nfp <- getNormalizedFilePathE uri
-    runIdeActionE "ExplicitFixity" (shakeExtras state) $ do
-      (FixityMap fixmap, _) <-  useWithStaleFastE GetFixity nfp
-      (HAR{hieAst}, mapping) <- useWithStaleFastE GetHieAst nfp
-      let ns = getNamesAtPoint hieAst pos mapping
+    runQuery state $ do
+      FixityMap fixmap <- untrack <$> settle_ GetFixity nfp
+      Tracked har mapping <- settle_ GetHieAst nfp
+      let ns = maybe [] (getNamesAtPoint har) $ rewind mapping pos
           fs = mapMaybe (\n -> (n,) <$> M.lookup n fixmap) ns
       pure $ maybeToNull $ toHover fs
     where
@@ -64,12 +65,15 @@ hover state _ (HoverParams (TextDocumentIdentifier uri) pos _) = do
         fixityText :: (Name, Fixity) -> T.Text
 #if MIN_VERSION_GLASGOW_HASKELL(9,12,0,0)
         fixityText (name, Fixity precedence direction) =
+            printOutputable direction <> " " <> printOutputable precedence <> " `" <> printOutputable name <> "`"
 #else
         fixityText (name, Fixity _ precedence direction) =
-#endif
             printOutputable direction <> " " <> printOutputable precedence <> " `" <> printOutputable name <> "`"
+#endif
 
+-- | The map uses names as keys.
 newtype FixityMap = FixityMap (M.Map Name Fixity)
+instance Ageless FixityMap
 instance Show FixityMap where
   show _ = "FixityMap"
 

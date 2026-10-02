@@ -26,12 +26,9 @@ module Development.IDE.Core.FileStore(
 
 import           Control.Concurrent.STM.Stats                 (STM, atomically)
 import           Control.Exception
-import           Control.Lens                                 ((^.))
+import           Control.Lens                                 ((&), (.~), (^.))
 import           Control.Monad.Extra
 import           Control.Monad.IO.Class
-import qualified Data.Binary                                  as B
-import qualified Data.ByteString                              as BS
-import qualified Data.ByteString.Lazy                         as LBS
 import qualified Data.HashMap.Strict                          as HashMap
 import           Data.IORef
 import qualified Data.Text                                    as T
@@ -39,6 +36,13 @@ import qualified Data.Text                                    as Text
 import           Data.Text.Utf16.Rope.Mixed                   (Rope)
 import           Data.Time
 import           Data.Time.Clock.POSIX
+import           Development.IDE.Core.API                     (Output,
+                                                               Publishing (..),
+                                                               RuleScope,
+                                                               cutoff, cutoffOn,
+                                                               failure, ok,
+                                                               output, rule,
+                                                               withRuleRecorder)
 import           Development.IDE.Core.FileUtils
 import           Development.IDE.Core.IdeConfiguration        (isWorkspaceFile)
 import           Development.IDE.Core.RuleTypes
@@ -95,35 +99,35 @@ instance Pretty Log where
       <+> pretty (fmap (fmap show) reverseDepPaths)
     LogShake msg -> pretty msg
 
-addWatchedFileRule :: Recorder (WithPriority Log) -> (NormalizedFilePath -> Action Bool) -> Rules ()
-addWatchedFileRule recorder isWatched = defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \AddWatchedFile f -> do
+addWatchedFileRule :: (NormalizedFilePath -> Action Bool) -> RuleScope ()
+addWatchedFileRule isWatched = rule $ \AddWatchedFile f -> do
   isAlreadyWatched <- isWatched f
   isWp <- isWorkspaceFile f
-  if isAlreadyWatched then pure (Just True) else
-    if not isWp then pure (Just False) else do
+  watched <- if isAlreadyWatched then pure True else
+    if not isWp then pure False else do
         ShakeExtras{lspEnv} <- getShakeExtras
         case lspEnv of
-            Just env -> fmap Just $ liftIO $ LSP.runLspT env $
+            Just env -> liftIO $ LSP.runLspT env $
                 registerFileWatches [fromNormalizedFilePath f]
-            Nothing -> pure $ Just False
+            Nothing -> pure False
+  pure (ok watched)
 
 
-getModificationTimeRule :: Recorder (WithPriority Log) -> Rules ()
-getModificationTimeRule recorder = defineEarlyCutoff (cmapWithPrio LogShake recorder) $ Rule $ \(GetModificationTime_ missingFileDiags) file ->
+getModificationTimeRule :: RuleScope ()
+getModificationTimeRule = rule $ \(GetModificationTime_ missingFileDiags) file ->
     getModificationTimeImpl missingFileDiags file
 
 getModificationTimeImpl
   :: Bool
   -> NormalizedFilePath
-  -> Action (Maybe BS.ByteString, ([FileDiagnostic], Maybe FileVersion))
+  -> Action (Output Publishes FileVersion)
 getModificationTimeImpl missingFileDiags file = do
     let file' = fromNormalizedFilePath file
-    let wrap time = (Just $ LBS.toStrict $ B.encode $ toRational time, ([], Just $ ModificationTime time))
     mbVf <- getVirtualFile file
     case mbVf of
         Just (virtualFileVersion -> ver) -> do
             alwaysRerun
-            pure (Just $ LBS.toStrict $ B.encode ver, ([], Just $ VFSVersion ver))
+            pure $ ok (VFSVersion ver) & cutoff .~ cutoffOn ver
         Nothing -> do
             isWF <- use_ AddWatchedFile file
             if isWF
@@ -137,37 +141,40 @@ getModificationTimeImpl missingFileDiags file = do
                     else -- in all other cases we will need to freshly check the file system
                         alwaysRerun
 
-            liftIO $ fmap wrap (getModTime file')
+            liftIO $ fmap modificationTimeOutput (getModTime file')
                 `catch` \(e :: IOException) -> do
                     let err | isDoesNotExistError e = "File does not exist: " ++ file'
                             | otherwise = "IO error while reading " ++ file' ++ ", " ++ displayException e
                         diag = ideErrorText file (T.pack err)
                     if isDoesNotExistError e && not missingFileDiags
-                        then return (Nothing, ([], Nothing))
-                        else return (Nothing, ([diag], Nothing))
+                        then return (output Nothing)
+                        else return (failure [diag])
+
+modificationTimeOutput :: POSIXTime -> Output p FileVersion
+modificationTimeOutput time =
+    ok (ModificationTime time) & cutoff .~ cutoffOn (toRational time)
 
 
-getPhysicalModificationTimeRule :: Recorder (WithPriority Log) -> Rules ()
-getPhysicalModificationTimeRule recorder = defineEarlyCutoff (cmapWithPrio LogShake recorder) $ Rule $ \GetPhysicalModificationTime file ->
+getPhysicalModificationTimeRule :: RuleScope ()
+getPhysicalModificationTimeRule = rule $ \GetPhysicalModificationTime file ->
     getPhysicalModificationTimeImpl file
 
 getPhysicalModificationTimeImpl
   :: NormalizedFilePath
-  -> Action (Maybe BS.ByteString, ([FileDiagnostic], Maybe FileVersion))
+  -> Action (Output Publishes FileVersion)
 getPhysicalModificationTimeImpl file = do
     let file' = fromNormalizedFilePath file
-    let wrap time = (Just $ LBS.toStrict $ B.encode $ toRational time, ([], Just $ ModificationTime time))
 
     alwaysRerun
 
-    liftIO $ fmap wrap (getModTime file')
+    liftIO $ fmap modificationTimeOutput (getModTime file')
         `catch` \(e :: IOException) -> do
             let err | isDoesNotExistError e = "File does not exist: " ++ file'
                     | otherwise = "IO error while reading " ++ file' ++ ", " ++ displayException e
                 diag = ideErrorText file (T.pack err)
             if isDoesNotExistError e
-                then return (Nothing, ([], Nothing))
-                else return (Nothing, ([diag], Nothing))
+                then return (output Nothing)
+                else return (failure [diag])
 
 -- | Interface files cannot be watched, since they live outside the workspace.
 --   But interface files are private, in that only HLS writes them.
@@ -204,19 +211,19 @@ modificationTime :: FileVersion -> Maybe UTCTime
 modificationTime VFSVersion{}             = Nothing
 modificationTime (ModificationTime posix) = Just $ posixSecondsToUTCTime posix
 
-getFileContentsRule :: Recorder (WithPriority Log) -> Rules ()
-getFileContentsRule recorder = define (cmapWithPrio LogShake recorder) $ \GetFileContents file -> getFileContentsImpl file
+getFileContentsRule :: RuleScope ()
+getFileContentsRule = rule $ \GetFileContents file -> getFileContentsImpl file
 
 getFileContentsImpl
     :: NormalizedFilePath
-    -> Action ([FileDiagnostic], Maybe (FileVersion, Maybe Rope))
+    -> Action (Output p (FileVersion, Maybe Rope))
 getFileContentsImpl file = do
     -- need to depend on modification time to introduce a dependency with Cutoff
     time <- use_ GetModificationTime file
     res <- do
         mbVirtual <- getVirtualFile file
         pure $ _file_text <$> mbVirtual
-    pure ([], Just (time, res))
+    pure $ ok (time, res)
 
 -- | Returns the modification time and the contents.
 --   For VFS paths, the modification time is the current time.
@@ -257,11 +264,11 @@ getVersionedTextDoc doc = do
   return (VersionedTextDocumentIdentifier uri ver)
 
 fileStoreRules :: Recorder (WithPriority Log) -> (NormalizedFilePath -> Action Bool) -> Rules ()
-fileStoreRules recorder isWatched = do
-    getModificationTimeRule recorder
-    getPhysicalModificationTimeRule recorder
-    getFileContentsRule recorder
-    addWatchedFileRule recorder isWatched
+fileStoreRules recorder isWatched = withRuleRecorder (cmapWithPrio LogShake recorder) $ do
+    getModificationTimeRule
+    getPhysicalModificationTimeRule
+    getFileContentsRule
+    addWatchedFileRule isWatched
 
 -- | Note that some buffer for a specific file has been modified but not
 -- with what changes.
@@ -291,7 +298,7 @@ typecheckParents recorder state nfp = void $ shakeEnqueue (shakeExtras state) pa
 
 typecheckParentsAction :: Recorder (WithPriority Log) -> NormalizedFilePath -> Action ()
 typecheckParentsAction recorder nfp = do
-    revs <- transitiveReverseDependencies nfp <$> useWithSeparateFingerprintRule_ GetModuleGraphTransReverseDepsFingerprints GetModuleGraph nfp
+    revs <- transitiveReverseDependencies nfp <$> use_ GetModuleGraphTransReverseDeps nfp
     case revs of
       Nothing -> logWith recorder Info $ LogCouldNotIdentifyReverseDeps nfp
       Just rs -> do

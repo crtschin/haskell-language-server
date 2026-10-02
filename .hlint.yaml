@@ -118,21 +118,15 @@
     - CompletionTests
     - Config
     - Development.IDE
-    - Development.IDE.Core.Actions
     - Development.IDE.Core.Compat
-    - Development.IDE.Core.FileExists
-    - Development.IDE.Core.FileStore
     - Development.IDE.Core.Internal.Shake
-    - Development.IDE.Core.OfInterest
-    - Development.IDE.Core.RuleTypes
-    - Development.IDE.Core.Rules
+    - Development.IDE.Core.Service
     - Development.IDE.Core.Shake
     - Development.IDE.GHC.ExactPrint
-    - Development.IDE.LSP.Outline
-    - Development.IDE.Plugin.Completions
-    - Development.IDE.Plugin.TypeLenses
-    - Development.IDE.Spans.AtPoint
-    - Development.IDE.Spans.Pragmas
+    - Development.IDE.Main
+    - Development.IDE.Plugin.CodeAction
+    - Development.IDE.Plugin.CodeAction.Args
+    - Development.IDE.Plugin.Test
     - HaddockTests
     - Ide.Plugin.AlternateNumberFormat
     - Ide.Plugin.Cabal
@@ -142,6 +136,9 @@
     - Ide.Plugin.Cabal.OfInterest
     - Ide.Plugin.Cabal.Outline
     - Ide.Plugin.Cabal.Rules
+    - Ide.Plugin.CabalFmt
+    - Ide.Plugin.CabalGild
+    - Ide.Plugin.CallHierarchy.Internal
     - Ide.Plugin.CaseSplit
     - Ide.Plugin.ChangeTypeSignature
     - Ide.Plugin.Class.CodeAction
@@ -155,10 +152,11 @@
     - Ide.Plugin.ExplicitFields
     - Ide.Plugin.ExplicitFixity
     - Ide.Plugin.ExplicitImports
-    - Ide.Plugin.Export
+    - Ide.Plugin.Fourmolu
     - Ide.Plugin.GADT
     - Ide.Plugin.Hlint
     - Ide.Plugin.Notes
+    - Ide.Plugin.Ormolu
     - Ide.Plugin.OverloadedRecordDot
     - Ide.Plugin.Pragmas
     - Ide.Plugin.QualifyImportedNames
@@ -190,6 +188,20 @@
   - {name: useWithStaleMT, within: *oldRuleApi}
   - {name: useWithStaleFastE, within: *oldRuleApi}
   - {name: useWithStaleFastMT, within: *oldRuleApi}
+  - {name: runAction, within: *oldRuleApi}
+  - {name: runActionE, within: *oldRuleApi}
+  - {name: runActionMT, within: *oldRuleApi}
+  - {name: runIdeAction, within: *oldRuleApi}
+  - {name: runIdeActionE, within: *oldRuleApi}
+  - {name: runIdeActionMT, within: *oldRuleApi}
+  - {name: runIdeActionT, within: *oldRuleApi}
+
+  # A query run outside 'runQuery' can wait for builds inside a rule.
+  - name: runQueryT
+    within:
+    - Development.IDE.Core.Compat
+    - Development.IDE.Core.Internal.Shake
+    - Development.IDE.Core.Use
 
   # Partial functions
 

@@ -28,17 +28,21 @@ import           Development.IDE                          (Action,
                                                            GetDocMap (GetDocMap),
                                                            GetHieAst (GetHieAst),
                                                            HieAstResult (HAR, hieAst, hieModule, refMap),
-                                                           IdeResult, IdeState,
+                                                           IdeState,
                                                            Priority (..),
                                                            Recorder, Rules,
                                                            WithPriority,
-                                                           cmapWithPrio, define,
+                                                           cmapWithPrio,
                                                            fromNormalizedFilePath,
                                                            hieKind,
                                                            toNormalizedFilePath')
-import           Development.IDE.Core.Compat              (runActionE, useE,
-                                                           useWithStaleE)
-import           Development.IDE.Core.Rules               (toIdeResult)
+import           Development.IDE.Core.API                 (Output, Tracked (..),
+                                                           await,
+                                                           fastForwardEach, ok,
+                                                           output, recall_,
+                                                           rule, runQuery,
+                                                           untrack, use_,
+                                                           withRuleRecorder)
 import           Development.IDE.Core.RuleTypes           (DocAndTyThingMap (..))
 import           Development.IDE.Core.Shake               (ShakeExtras (..),
                                                            getShakeExtras,
@@ -80,11 +84,13 @@ computeSemanticTokens recorder pid _ nfp = do
   config <- lift $ useSemanticConfigAction pid
   logWith recorder Debug (LogConfig config)
   semanticId <- lift getAndIncreaseSemanticTokensId
-  (RangeHsSemanticTokenTypes {rangeSemanticList}, mapping) <- useWithStaleE GetSemanticTokens nfp
-  withExceptT PluginInternalError $ liftEither $ rangeSemanticsSemanticTokens semanticId config mapping rangeSemanticList
+  Tracked tokens mapping <- recall_ GetSemanticTokens nfp
+  -- The tokens that an edit changed drop out.
+  let current = fastForwardEach mapping (rangeSemanticList <$> tokens)
+  withExceptT PluginInternalError $ liftEither $ rangeSemanticsSemanticTokens semanticId config current
 
 semanticTokensFull :: Recorder (WithPriority SemanticLog) -> PluginMethodHandler IdeState 'Method_TextDocumentSemanticTokensFull
-semanticTokensFull recorder state pid param = runActionE "SemanticTokens.semanticTokensFull" state computeSemanticTokensFull
+semanticTokensFull recorder state pid param = runQuery state $ await "SemanticTokens.semanticTokensFull" computeSemanticTokensFull
   where
     computeSemanticTokensFull :: ExceptT PluginError Action (MessageResult Method_TextDocumentSemanticTokensFull)
     computeSemanticTokensFull = do
@@ -98,7 +104,7 @@ semanticTokensFullDelta :: Recorder (WithPriority SemanticLog) -> PluginMethodHa
 semanticTokensFullDelta recorder state pid param = do
   nfp <- getNormalizedFilePathE (param ^. L.textDocument . L.uri)
   let previousVersionFromParam = param ^. L.previousResultId
-  runActionE "SemanticTokens.semanticTokensFullDelta" state $ computeSemanticTokensFullDelta recorder previousVersionFromParam  pid state nfp
+  runQuery state $ await "SemanticTokens.semanticTokensFullDelta" $ computeSemanticTokensFullDelta recorder previousVersionFromParam  pid state nfp
   where
     computeSemanticTokensFullDelta :: Recorder (WithPriority SemanticLog) -> Text -> PluginId -> IdeState -> NormalizedFilePath -> ExceptT PluginError Action (MessageResult Method_TextDocumentSemanticTokensFullDelta)
     computeSemanticTokensFullDelta recorder previousVersionFromParam  pid state nfp = do
@@ -127,9 +133,9 @@ semanticTokensFullDelta recorder state pid param = do
 -- It then combines this information to compute the semantic tokens for the file.
 getSemanticTokensRule :: Recorder (WithPriority SemanticLog) -> Rules ()
 getSemanticTokensRule recorder =
-  define (cmapWithPrio LogShake recorder) $ \GetSemanticTokens nfp -> handleError recorder $ do
-    (HAR {..}) <- withExceptT LogDependencyError $ useE GetHieAst nfp
-    (DKMap {getTyThingMap}, _) <- withExceptT LogDependencyError $ useWithStaleE GetDocMap nfp
+  withRuleRecorder (cmapWithPrio LogShake recorder) $ rule $ \GetSemanticTokens nfp -> handleError recorder $ do
+    (HAR {..}) <- withExceptT LogDependencyError $ use_ GetHieAst nfp
+    DKMap {getTyThingMap} <- withExceptT LogDependencyError $ untrack <$> recall_ GetDocMap nfp
     -- On Windows, 'nfp' contains escaped backslashes \\\\. For files that use
     -- the CPP extension, 'hieAst' contains forward slashes '/', because the C
     -- preprocessor conflicts with backslashes. We need to "renormalize" it,
@@ -144,14 +150,14 @@ getSemanticTokensRule recorder =
 -- taken from /haskell-language-server/plugins/hls-code-range-plugin/src/Ide/Plugin/CodeRange/Rules.hs
 
 -- | Handle error in 'Action'. Returns an 'IdeResult' with no value and no diagnostics on error. (but writes log)
-handleError :: Recorder (WithPriority msg) -> ExceptT msg Action a -> Action (IdeResult a)
+handleError :: Recorder (WithPriority msg) -> ExceptT msg Action a -> Action (Output p a)
 handleError recorder action' = do
   valueEither <- runExceptT action'
   case valueEither of
     Left msg -> do
       logWith recorder Warning msg
-      pure $ toIdeResult (Left [])
-    Right value -> pure $ toIdeResult (Right value)
+      pure $ output Nothing
+    Right value -> pure $ ok value
 
 -----------------------
 -- helper functions

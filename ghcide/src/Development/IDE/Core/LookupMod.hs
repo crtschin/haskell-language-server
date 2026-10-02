@@ -1,7 +1,7 @@
 module Development.IDE.Core.LookupMod (lookupMod, LookupModule) where
 
 import           Control.Monad.Trans.Maybe       (MaybeT (MaybeT))
-import           Development.IDE.Core.Shake      (HieDbWriter, IdeAction)
+import           Development.IDE.Core.Shake      (HieDbWriter)
 import           Development.IDE.GHC.Compat.Core (ModuleName, Unit)
 import           Development.IDE.Types.Location  (Uri)
 
@@ -12,6 +12,7 @@ type LookupModule m = FilePath -> ModuleName -> Unit -> Bool -> MaybeT m Uri
 -- | Eventually this will lookup/generate URIs for files in dependencies, but not in the
 -- project. Right now, this is just a stub.
 lookupMod ::
+  Applicative m =>
   -- | access the database
   HieDbWriter ->
   -- | The `.hie` file we got from the database
@@ -20,5 +21,5 @@ lookupMod ::
   Unit ->
   -- | Is this file a boot file?
   Bool ->
-  MaybeT IdeAction Uri
+  MaybeT m Uri
 lookupMod _dbchan _hie_f _mod _uid _boot = MaybeT $ pure Nothing

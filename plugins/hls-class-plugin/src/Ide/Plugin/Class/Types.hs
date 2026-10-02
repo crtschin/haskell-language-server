@@ -10,7 +10,6 @@ module Ide.Plugin.Class.Types where
 import           Control.DeepSeq                 (rwhnf)
 import           Control.Monad.Extra             (mapMaybeM)
 import           Control.Monad.IO.Class          (liftIO)
-import           Control.Monad.Trans.Maybe       (runMaybeT)
 import           Data.Aeson
 import qualified Data.IntMap                     as IntMap
 import           Data.Maybe                      (fromMaybe, listToMaybe,
@@ -18,7 +17,9 @@ import           Data.Maybe                      (fromMaybe, listToMaybe,
 import qualified Data.Text                       as T
 import           Data.Unique                     (hashUnique, newUnique)
 import           Development.IDE
-import           Development.IDE.Core.Compat     (useMT)
+import           Development.IDE.Core.API        (Publishing (..),
+                                                  RuleDiagnostics, ok, rule,
+                                                  withRuleRecorder)
 import qualified Development.IDE.Core.Shake      as Shake
 import           Development.IDE.GHC.Compat      hiding (newUnique, (<+>))
 import           Development.IDE.GHC.Compat.Util (bagToList)
@@ -55,6 +56,7 @@ data AddMinimalMethodsParams = AddMinimalMethodsParams
 -- code lens (to display inferred signatures) consume this rule.
 data GetClassInstances = GetClassInstances
     deriving (Generic, Show, Eq, Ord, Hashable, NFData)
+instance RuleDiagnostics Quiet GetClassInstances
 
 data InstanceInfo = InstanceInfo
     { instSpan    :: SrcSpan
@@ -92,6 +94,7 @@ data InstanceBindLensCommand = InstanceBindLensCommand
 -- unique IDs for resolve.
 data GetInstanceBindLens = GetInstanceBindLens
     deriving (Generic, Show, Eq, Ord, Hashable, NFData)
+instance RuleDiagnostics Quiet GetInstanceBindLens
 
 data InstanceBindLens = InstanceBindLens
     { -- |What we need to provide the code lens. The range linked with
@@ -139,14 +142,14 @@ data BindInfo = BindInfo
     }
 
 getInstanceBindLensRule :: Recorder (WithPriority Log) -> Rules ()
-getInstanceBindLensRule recorder = do
-    defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \GetInstanceBindLens nfp -> runMaybeT $ do
+getInstanceBindLensRule recorder =
+    withRuleRecorder (cmapWithPrio LogShake recorder) $ rule $ \GetInstanceBindLens nfp -> ok <$> do
 #if MIN_VERSION_ghc(9,9,0)
-        tmr@(tmrRenamed ->  (hs_tyclds -> tycls, _, _, _, _)) <- useMT TypeCheck nfp
+        tmr@(tmrRenamed ->  (hs_tyclds -> tycls, _, _, _, _)) <- use_ TypeCheck nfp
 #else
-        tmr@(tmrRenamed ->  (hs_tyclds -> tycls, _, _, _)) <- useMT TypeCheck nfp
+        tmr@(tmrRenamed ->  (hs_tyclds -> tycls, _, _, _)) <- use_ TypeCheck nfp
 #endif
-        ClassInstancesResult instMap <- useMT GetClassInstances nfp
+        ClassInstancesResult instMap <- use_ GetClassInstances nfp
 
         let -- Correlate renamed ClsInstDecls with their InstanceInfo by source
             -- span (the only link between the renamed tree and tcg_insts), then
@@ -204,10 +207,10 @@ getInstanceBindLensRule recorder = do
             in toBindInfo <$> filter (\(L _ name) -> unLoc name `notElem` existingSigNames) bindNames
 
 getClassInstancesRule :: Recorder (WithPriority Log) -> Rules ()
-getClassInstancesRule recorder = do
-    defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \GetClassInstances nfp -> runMaybeT $ do
-        (tmrTypechecked -> gblEnv) <- useMT TypeCheck nfp
-        (hscEnv -> hsc) <- useMT GhcSession nfp
+getClassInstancesRule recorder =
+    withRuleRecorder (cmapWithPrio LogShake recorder) $ rule $ \GetClassInstances nfp -> ok <$> do
+        (tmrTypechecked -> gblEnv) <- use_ TypeCheck nfp
+        (hscEnv -> hsc) <- use_ GhcSession nfp
         (_, mInfos) <- liftIO $
             initTcWithGbl hsc gblEnv ghostSpan
 #if MIN_VERSION_ghc(9,7,0)

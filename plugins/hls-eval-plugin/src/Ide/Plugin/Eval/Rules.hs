@@ -4,49 +4,49 @@
 
 module Ide.Plugin.Eval.Rules (GetEvalComments(..), rules,queueForEvaluation, unqueueForEvaluation, Log) where
 
-import           Control.Lens                         (toListOf)
-import           Control.Monad.IO.Class               (MonadIO (liftIO))
-import qualified Data.ByteString                      as BS
-import           Data.Data.Lens                       (biplate)
-import           Data.HashSet                         (HashSet)
-import qualified Data.HashSet                         as Set
+import           Control.Lens                    (toListOf, (&), (.~))
+import           Control.Monad.IO.Class          (MonadIO (liftIO))
+import           Data.Data.Lens                  (biplate)
+import           Data.HashSet                    (HashSet)
+import qualified Data.HashSet                    as Set
 import           Data.IORef
-import qualified Data.Map.Strict                      as Map
-import           Data.String                          (fromString)
-import           Development.IDE                      (GetParsedModuleWithComments (GetParsedModuleWithComments),
-                                                       IdeState,
-                                                       LinkableType (BCOLinkable),
-                                                       NeedsCompilation (NeedsCompilation),
-                                                       NormalizedFilePath,
-                                                       RuleBody (RuleNoDiagnostics),
-                                                       Rules, defineEarlyCutoff,
-                                                       encodeLinkableType,
-                                                       fromNormalizedFilePath,
-                                                       realSrcSpanToRange,
-                                                       useWithStale_, use_)
-import           Development.IDE.Core.PositionMapping (toCurrentRange)
-import           Development.IDE.Core.Rules           (needsCompilationRule)
-import           Development.IDE.Core.Shake           (IsIdeGlobal,
-                                                       RuleBody (RuleWithCustomNewnessCheck),
-                                                       addIdeGlobal,
-                                                       getIdeGlobalAction,
-                                                       getIdeGlobalState)
+import qualified Data.Map.Strict                 as Map
+import           Data.String                     (fromString)
+import           Development.IDE                 (GetParsedModuleWithComments (GetParsedModuleWithComments),
+                                                  IdeState,
+                                                  LinkableType (BCOLinkable),
+                                                  NeedsCompilation (NeedsCompilation),
+                                                  NormalizedFilePath, Rules,
+                                                  encodeLinkableType,
+                                                  fromNormalizedFilePath,
+                                                  realSrcSpanToRange, use_)
+import           Development.IDE.Core.API        (Cutoff (..),
+                                                  FingerprintCheck (..),
+                                                  RuleScope, Tracked (..),
+                                                  cutoff, cutoffBy, cutoffOn,
+                                                  fastForward, liftRules, ok,
+                                                  recall_, rule, ruleWith,
+                                                  withRuleRecorder)
+import           Development.IDE.Core.Rules      (needsCompilationRule)
+import           Development.IDE.Core.Shake      (IsIdeGlobal, addIdeGlobal,
+                                                  getIdeGlobalAction,
+                                                  getIdeGlobalState)
 import           Development.IDE.GHC.Compat
-import qualified Development.IDE.GHC.Compat           as SrcLoc
-import qualified Development.IDE.GHC.Compat.Util      as FastString
-import           Development.IDE.Graph                (alwaysRerun)
+import qualified Development.IDE.GHC.Compat      as SrcLoc
+import qualified Development.IDE.GHC.Compat.Util as FastString
+import           Development.IDE.Graph           (alwaysRerun)
 import           GHC.Parser.Annotation
-import           Ide.Logger                           (Recorder, WithPriority,
-                                                       cmapWithPrio)
+import           Ide.Logger                      (Recorder, WithPriority,
+                                                  cmapWithPrio)
 import           Ide.Plugin.Eval.Types
 
 
 rules :: Recorder (WithPriority Log) -> Rules ()
-rules recorder = do
-    evalParsedModuleRule recorder
-    redefinedNeedsCompilation recorder
-    isEvaluatingRule recorder
-    addIdeGlobal . EvaluatingVar =<< liftIO(newIORef mempty)
+rules recorder = withRuleRecorder (cmapWithPrio LogShake recorder) $ do
+    evalParsedModuleRule
+    redefinedNeedsCompilation
+    isEvaluatingRule
+    liftRules . addIdeGlobal . EvaluatingVar =<< liftIO (newIORef mempty)
 
 newtype EvaluatingVar = EvaluatingVar (IORef (HashSet NormalizedFilePath))
 instance IsIdeGlobal EvaluatingVar
@@ -79,15 +79,14 @@ apiAnnComments' pm = do
 pattern RealSrcSpanAlready :: SrcLoc.RealSrcSpan -> SrcLoc.RealSrcSpan
 pattern RealSrcSpanAlready x = x
 
-evalParsedModuleRule :: Recorder (WithPriority Log) -> Rules ()
-evalParsedModuleRule recorder = defineEarlyCutoff (cmapWithPrio LogShake recorder) $ RuleNoDiagnostics $ \GetEvalComments nfp -> do
-    (pm, posMap) <- useWithStale_ GetParsedModuleWithComments nfp
-    let comments = foldMap (\case
+evalParsedModuleRule :: RuleScope ()
+evalParsedModuleRule = rule $ \GetEvalComments nfp -> do
+    Tracked pm posMap <- recall_ GetParsedModuleWithComments nfp
+    let collect = foldMap (\case
                 L (RealSrcSpanAlready real) bdy
                     | FastString.unpackFS (srcSpanFile real) ==
                         fromNormalizedFilePath nfp
-                    , let ran0 = realSrcSpanToRange real
-                    , Just curRan <- toCurrentRange posMap ran0
+                    , let curRan = realSrcSpanToRange real
                     ->
 
                         -- since Haddock parsing is unset explicitly in 'getParsedModuleWithComments',
@@ -100,31 +99,29 @@ evalParsedModuleRule recorder = defineEarlyCutoff (cmapWithPrio LogShake recorde
                             _ -> mempty
                 _ -> mempty
             )
-            $ apiAnnComments' pm
-        -- we only care about whether the comments are null
-        -- this is valid because the only dependent is NeedsCompilation
-        fingerPrint = fromString $ if nullComments comments then "" else "1"
-    return (Just fingerPrint, Just comments)
+            . apiAnnComments'
+    comments <- fastForward posMap (collect <$> pm)
+    -- we only care about whether the comments are null
+    -- this is valid because the only dependent is NeedsCompilation
+    let fingerPrint = fromString $ if nullComments comments then "" else "1"
+    pure $ ok comments & cutoff .~ RerunOnChange fingerPrint
 
-isEvaluatingRule :: Recorder (WithPriority Log) -> Rules ()
-isEvaluatingRule recorder = defineEarlyCutoff (cmapWithPrio LogShake recorder) $ RuleNoDiagnostics $ \IsEvaluating f -> do
+isEvaluatingRule :: RuleScope ()
+isEvaluatingRule = rule $ \IsEvaluating f -> do
     alwaysRerun
     EvaluatingVar var <- getIdeGlobalAction
     b <- liftIO $ (f `Set.member`) <$> readIORef var
-    return (Just (if b then BS.singleton 1 else BS.empty), Just b)
+    pure $ ok b & cutoff .~ cutoffOn b
 
 -- Redefine the NeedsCompilation rule to set the linkable type to Just _
 -- whenever the module is being evaluated
 -- This will ensure that the modules are loaded with linkables
 -- and the interactive session won't try to compile them on the fly,
 -- leading to much better performance of the evaluate code lens
-redefinedNeedsCompilation :: Recorder (WithPriority Log) -> Rules ()
-redefinedNeedsCompilation recorder = defineEarlyCutoff (cmapWithPrio LogShake recorder) $ RuleWithCustomNewnessCheck (<=) $ \NeedsCompilation f -> do
+redefinedNeedsCompilation :: RuleScope ()
+redefinedNeedsCompilation = ruleWith (FingerprintCheck (<=)) $ \NeedsCompilation f -> do
     isEvaluating <- use_ IsEvaluating f
-    if isEvaluating then do
-        let linkableType = BCOLinkable
-            fp = encodeLinkableType $ Just linkableType
-        pure (Just fp, Just (Just linkableType))
-    else
-        needsCompilationRule f
+    if isEvaluating
+      then pure $ cutoffBy encodeLinkableType (ok (Just BCOLinkable))
+      else needsCompilationRule f
 

@@ -11,49 +11,40 @@ module Ide.Plugin.CodeRange (
     , createFoldingRange
     ) where
 
-import           Control.Monad.IO.Class               (MonadIO (liftIO))
-import           Control.Monad.Trans.Except           (ExceptT, mapExceptT)
-import           Control.Monad.Trans.Maybe            (MaybeT (MaybeT),
-                                                       maybeToExceptT)
-import           Data.List.Extra                      (drop1)
-import           Data.Maybe                           (fromMaybe)
-import           Data.Vector                          (Vector)
-import qualified Data.Vector                          as V
-import           Development.IDE                      (Action,
-                                                       IdeState (shakeExtras),
-                                                       Range (Range), Recorder,
-                                                       WithPriority,
-                                                       cmapWithPrio)
-import           Development.IDE.Core.Compat          (fromCurrentPositionE,
-                                                       runActionE,
-                                                       runIdeActionE, useE,
-                                                       useWithStaleFastE)
-import           Development.IDE.Core.PositionMapping (PositionMapping,
-                                                       toCurrentRange)
-import           Ide.Logger                           (Pretty (..))
-import           Ide.Plugin.CodeRange.Rules           (CodeRange (..),
-                                                       GetCodeRange (..),
-                                                       codeRangeRule, crkToFrk)
-import qualified Ide.Plugin.CodeRange.Rules           as Rules (Log)
+import           Control.Monad.IO.Class        (MonadIO)
+import           Control.Monad.Trans.Except    (ExceptT)
+import           Data.List.Extra               (drop1)
+import           Data.Maybe                    (fromMaybe)
+import           Data.Vector                   (Vector)
+import qualified Data.Vector                   as V
+import           Development.IDE               (IdeState, Range (Range),
+                                                Recorder, WithPriority,
+                                                cmapWithPrio)
+import           Development.IDE.Core.API      (Tracked (..), fastForward,
+                                                fetch_, rewind, runQuery,
+                                                settle_)
+import           Ide.Logger                    (Pretty (..))
+import           Ide.Plugin.CodeRange.Rules    (CodeRange (..),
+                                                GetCodeRange (..),
+                                                codeRangeRule, crkToFrk)
+import qualified Ide.Plugin.CodeRange.Rules    as Rules (Log)
 import           Ide.Plugin.Error
-import           Ide.PluginUtils                      (positionInRange)
-import           Ide.Types                            (PluginDescriptor (pluginHandlers, pluginRules),
-                                                       PluginId,
-                                                       PluginMethodHandler,
-                                                       defaultPluginDescriptor,
-                                                       mkPluginHandler)
-import           Language.LSP.Protocol.Message        (Method (Method_TextDocumentFoldingRange, Method_TextDocumentSelectionRange),
-                                                       SMethod (SMethod_TextDocumentFoldingRange, SMethod_TextDocumentSelectionRange))
-import           Language.LSP.Protocol.Types          (FoldingRange (..),
-                                                       FoldingRangeParams (..),
-                                                       NormalizedFilePath, Null,
-                                                       Position (..),
-                                                       Range (_start),
-                                                       SelectionRange (..),
-                                                       SelectionRangeParams (..),
-                                                       TextDocumentIdentifier (TextDocumentIdentifier),
-                                                       Uri, type (|?) (InL))
-import           Prelude                              hiding (log, span)
+import           Ide.PluginUtils               (positionInRange)
+import           Ide.Types                     (PluginDescriptor (pluginHandlers, pluginRules),
+                                                PluginId, PluginMethodHandler,
+                                                defaultPluginDescriptor,
+                                                mkPluginHandler)
+import           Language.LSP.Protocol.Message (Method (Method_TextDocumentFoldingRange, Method_TextDocumentSelectionRange),
+                                                SMethod (SMethod_TextDocumentFoldingRange, SMethod_TextDocumentSelectionRange))
+import           Language.LSP.Protocol.Types   (FoldingRange (..),
+                                                FoldingRangeParams (..),
+                                                NormalizedFilePath, Null,
+                                                Position (..), Range (_start),
+                                                SelectionRange (..),
+                                                SelectionRangeParams (..),
+                                                TextDocumentIdentifier (TextDocumentIdentifier),
+                                                Uri, type (|?) (InL))
+import           Prelude                       hiding (log, span)
 
 descriptor :: Recorder (WithPriority Log) -> PluginId -> PluginDescriptor IdeState
 descriptor recorder plId = (defaultPluginDescriptor plId "Provides selection and folding ranges for Haskell")
@@ -72,22 +63,17 @@ foldingRangeHandler :: Recorder (WithPriority Log) -> PluginMethodHandler IdeSta
 foldingRangeHandler _ ide _ FoldingRangeParams{..} =
     do
         filePath <- getNormalizedFilePathE uri
-        foldingRanges <- runActionE "FoldingRange" ide $ getFoldingRanges filePath
+        foldingRanges <- findFoldingRanges <$> runQuery ide (fetch_ GetCodeRange filePath)
         pure . InL $ foldingRanges
   where
     uri :: Uri
     TextDocumentIdentifier uri = _textDocument
 
-getFoldingRanges :: NormalizedFilePath -> ExceptT PluginError Action [FoldingRange]
-getFoldingRanges file = do
-    codeRange <- useE GetCodeRange file
-    pure $ findFoldingRanges codeRange
-
 selectionRangeHandler :: Recorder (WithPriority Log) -> PluginMethodHandler IdeState 'Method_TextDocumentSelectionRange
 selectionRangeHandler _ ide _ SelectionRangeParams{..} = do
    do
         filePath <- getNormalizedFilePathE uri
-        mapExceptT liftIO $ getSelectionRanges ide filePath positions
+        getSelectionRanges ide filePath positions
   where
     uri :: Uri
     TextDocumentIdentifier uri = _textDocument
@@ -96,22 +82,16 @@ selectionRangeHandler _ ide _ SelectionRangeParams{..} = do
     positions = _positions
 
 
-getSelectionRanges :: IdeState -> NormalizedFilePath -> [Position] -> ExceptT PluginError IO ([SelectionRange] |? Null)
-getSelectionRanges ide file positions = do
-    (codeRange, positionMapping) <- runIdeActionE "SelectionRange" (shakeExtras ide) $ useWithStaleFastE GetCodeRange file
-    -- 'positionMapping' should be applied to the input before using them
-    positions' <-
-        traverse (fromCurrentPositionE positionMapping) positions
-
+getSelectionRanges :: MonadIO m => IdeState -> NormalizedFilePath -> [Position] -> ExceptT PluginError m ([SelectionRange] |? Null)
+getSelectionRanges ide file positions = runQuery ide $ do
+    Tracked codeRange mapping <- settle_ GetCodeRange file
+    positions' <- traverse (rewind mapping) positions
     let selectionRanges = flip fmap positions' $ \pos ->
             -- We need a default selection range if the lookup fails,
             -- so that other positions can still have valid results.
-            let defaultSelectionRange = SelectionRange (Range pos pos) Nothing
-             in fromMaybe defaultSelectionRange . findPosition pos $ codeRange
-
-    -- 'positionMapping' should be applied to the output ranges before returning them
-    maybeToExceptT (PluginInvalidUserState "toCurrentSelectionRange") . MaybeT . pure $
-        InL <$> traverse (toCurrentSelectionRange positionMapping) selectionRanges
+            let defaultSelectionRange p = SelectionRange (Range p p) Nothing
+             in (\p -> fromMaybe (defaultSelectionRange p) . findPosition p) <$> pos <*> codeRange
+    InL <$> fastForward mapping (sequenceA selectionRanges)
 
 -- | Find 'Position' in 'CodeRange'. This can fail, if the given position is not covered by the 'CodeRange'.
 findPosition :: Position -> CodeRange -> Maybe SelectionRange
@@ -177,12 +157,3 @@ createFoldingRange (CodeRange (Range (Position lineStart charStart) (Position li
     -- Type conversion of codeRangeKind to FoldingRangeKind
     let frk = crkToFrk ck
     Just (FoldingRange lineStart (Just charStart) lineEnd (Just charEnd) (Just frk) Nothing)
-
--- | Likes 'toCurrentPosition', but works on 'SelectionRange'
-toCurrentSelectionRange :: PositionMapping -> SelectionRange -> Maybe SelectionRange
-toCurrentSelectionRange positionMapping SelectionRange{..} = do
-    newRange <- toCurrentRange positionMapping _range
-    pure $ SelectionRange {
-        _range = newRange,
-        _parent = _parent >>= toCurrentSelectionRange positionMapping
-    }

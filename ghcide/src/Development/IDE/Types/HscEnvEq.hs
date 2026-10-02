@@ -7,23 +7,26 @@ module Development.IDE.Types.HscEnvEq
 ) where
 
 
-import           Control.Concurrent.Async        (Async, async, waitCatch)
-import           Control.Concurrent.Strict       (modifyVar, newVar)
-import           Control.DeepSeq                 (rwhnf)
-import           Control.Exception               (mask, throwIO)
-import qualified Control.Exception               as Exc
-import           Control.Monad.Extra             (eitherM, join, mapMaybeM)
+import           Control.Concurrent.Async              (Async, async, waitCatch)
+import           Control.Concurrent.Strict             (modifyVar, newVar)
+import           Control.DeepSeq                       (rwhnf)
+import           Control.Exception                     (mask, throwIO)
+import qualified Control.Exception                     as Exc
+import           Control.Monad.Extra                   (eitherM, join,
+                                                        mapMaybeM)
 import           Data.IORef
-import           Data.Unique                     (Unique)
-import qualified Data.Unique                     as Unique
-import           Development.IDE.GHC.Compat      hiding (newUnique)
-import qualified Development.IDE.GHC.Compat.Util as Maybes
-import           Development.IDE.GHC.Util        (lookupPackageConfig)
+import           Data.Unique                           (Unique)
+import qualified Data.Unique                           as Unique
+import           Development.IDE.Core.Internal.Tracked (Ageless)
+import           Development.IDE.GHC.Compat            hiding (newUnique)
+import qualified Development.IDE.GHC.Compat.Util       as Maybes
+import           Development.IDE.GHC.Util              (lookupPackageConfig)
 import           Development.IDE.Graph.Classes
-import           Development.IDE.Types.Exports   (ExportsMap, createExportsMap)
-import           Development.IDE.Types.Location  (NormalizedFilePath)
-import           GHC.Driver.Env                  (hsc_all_home_unit_ids)
-import           OpenTelemetry.Eventlog          (withSpan)
+import           Development.IDE.Types.Exports         (ExportsMap,
+                                                        createExportsMap)
+import           Development.IDE.Types.Location        (NormalizedFilePath)
+import           GHC.Driver.Env                        (hsc_all_home_unit_ids)
+import           OpenTelemetry.Eventlog                (withSpan)
 
 
 -- | An 'HscEnv' with equality. Two values are considered equal
@@ -106,6 +109,8 @@ newHscEnvEq envRepresentative hscEnv' = do
         return $ createExportsMap modIfaces
 
     return HscEnvEq{..}
+
+instance Ageless HscEnvEq
 
 instance Show HscEnvEq where
   show HscEnvEq{envUnique} = "HscEnvEq " ++ show (Unique.hashUnique envUnique)

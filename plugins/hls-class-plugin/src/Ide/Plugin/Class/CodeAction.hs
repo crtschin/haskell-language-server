@@ -23,7 +23,7 @@ import           Data.List.Extra                  (nubOrdOn)
 import           Data.Maybe                       (listToMaybe, mapMaybe)
 import qualified Data.Text                        as T
 import           Development.IDE
-import           Development.IDE.Core.Compat      (runActionE, useE)
+import           Development.IDE.Core.API         (fetch_, runQuery)
 import           Development.IDE.Core.FileStore   (getVersionedTextDoc)
 import           Development.IDE.Core.PluginUtils
 import           Development.IDE.GHC.Compat
@@ -48,10 +48,8 @@ addMethodPlaceholders :: PluginId -> CommandFunction IdeState AddMinimalMethodsP
 addMethodPlaceholders _ state _ param@AddMinimalMethodsParams{..} = do
     caps <- lift pluginGetClientCapabilities
     nfp <- getNormalizedFilePathE (verTxtDocId ^. L.uri)
-    pm <- runActionE "classplugin.addMethodPlaceholders.GetParsedModule" state
-        $ useE GetParsedModule nfp
-    (hsc_dflags . hscEnv -> df) <- runActionE "classplugin.addMethodPlaceholders.GhcSessionDeps" state
-        $ useE GhcSessionDeps nfp
+    pm <- runQuery state $ fetch_ GetParsedModule nfp
+    (hsc_dflags . hscEnv -> df) <- runQuery state $ fetch_ GhcSessionDeps nfp
     (old, new) <- handleMaybeM (PluginInternalError "Unable to makeEditText")
         $ liftIO $ runMaybeT
         $ makeEditText pm df param
@@ -100,12 +98,11 @@ codeAction recorder state plId (CodeActionParams _ _ docId caRange _) = do
             -> (FileDiagnostic, ClassMinimalDef)
             -> ExceptT PluginError (HandlerM Ide.Plugin.Config.Config) [Command |? CodeAction]
         mkActions docPath verTxtDocId (diag, classMinDef) = do
-            ClassInstancesResult instMap <- runActionE "classplugin.codeAction.GetClassInstances" state
-                $ useE GetClassInstances docPath
+            ClassInstancesResult instMap <- runQuery state $ fetch_ GetClassInstances docPath
             inst <- handleMaybe (PluginInvalidUserState "no instance at diagnostic range")
                 $ listToMaybe (RangeMap.filterByRange range instMap)
-            (tmrTypechecked -> gblEnv) <- runActionE "classplugin.codeAction.TypeCheck" state $ useE TypeCheck docPath
-            (hscEnv -> hsc) <- runActionE "classplugin.codeAction.GhcSession" state $ useE GhcSession docPath
+            (tmrTypechecked -> gblEnv) <- runQuery state $ fetch_ TypeCheck docPath
+            (hscEnv -> hsc) <- runQuery state $ fetch_ GhcSession docPath
             logWith recorder Debug (LogImplementedMethods (hsc_dflags hsc) (instClass inst) classMinDef)
             pure
                 $ concatMap mkAction
@@ -173,7 +170,7 @@ makeMethodDefinition hsc gblEnv (name, ty) = (nameTxt, signature)
         -- nameTxt is bare (no parens); ExactPrint.makeMethodDecl applies
         -- toMethodName to wrap operators when emitting the placeholder.
         nameTxt   = printOutputable name
-        signature = toMethodName nameTxt <> " :: " <> T.pack (showDoc hsc gblEnv ty)
+        signature = toMethodName nameTxt <> " :: " <> T.pack (showDoc hsc (mkPrintUnqualifiedDefault hsc (tcg_rdr_env gblEnv)) ty)
 
 minDefToMethodGroups :: HscEnv -> TcGblEnv -> [(Name, Type)] -> ClassMinimalDef -> [MethodGroup]
 minDefToMethodGroups hsc gblEnv methods minDef = makeMethodGroup <$> go minDef

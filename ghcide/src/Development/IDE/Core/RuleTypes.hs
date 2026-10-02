@@ -24,6 +24,9 @@ import qualified Data.Map                                     as M
 import           Data.Maybe                                   (fromMaybe)
 import           Data.Time.Clock.POSIX
 import           Data.Typeable
+import           Development.IDE.Core.Internal.Publishing     (Publishing (..),
+                                                               RuleDiagnostics)
+import           Development.IDE.Core.Internal.Tracked        (Ageless)
 import           Development.IDE.GHC.Compat                   hiding
                                                               (HieFileResult)
 import           Development.IDE.GHC.Compat.Util
@@ -77,16 +80,21 @@ type instance RuleResult GetParsedModuleWithComments = ParsedModule
 
 type instance RuleResult GetModuleGraph = DependencyInformation
 
--- | it only compute the fingerprint of the module graph for a file and its dependencies
--- we need this to trigger recompilation when the sub module graph for a file changes
-type instance RuleResult GetModuleGraphTransDepsFingerprints = Fingerprint
-type instance RuleResult GetModuleGraphTransReverseDepsFingerprints = Fingerprint
-type instance RuleResult GetModuleGraphImmediateReverseDepsFingerprints = Fingerprint
+-- | The module graph. Dependents rerun only when the transitive dependencies
+-- of the file change.
+type instance RuleResult GetModuleGraphTransDeps = DependencyInformation
+-- | The module graph. Dependents rerun only when the transitive reverse
+-- dependencies of the file change.
+type instance RuleResult GetModuleGraphTransReverseDeps = DependencyInformation
+-- | The module graph. Dependents rerun only when the immediate reverse
+-- dependencies of the file change.
+type instance RuleResult GetModuleGraphImmediateReverseDeps = DependencyInformation
 
 data GetKnownTargets = GetKnownTargets
   deriving (Show, Generic, Eq, Ord)
 instance Hashable GetKnownTargets
 instance NFData   GetKnownTargets
+instance RuleDiagnostics Quiet GetKnownTargets
 type instance RuleResult GetKnownTargets = KnownTargets
 
 -- | Convert to Core, requires TypeCheck*
@@ -96,6 +104,7 @@ data GenerateCore = GenerateCore
     deriving (Eq, Show, Generic)
 instance Hashable GenerateCore
 instance NFData   GenerateCore
+instance RuleDiagnostics Publishes GenerateCore
 
 type instance RuleResult GetLinkable = LinkableResult
 
@@ -119,17 +128,20 @@ data GetLinkable = GetLinkable
     deriving (Eq, Show, Generic)
 instance Hashable GetLinkable
 instance NFData   GetLinkable
+instance RuleDiagnostics Publishes GetLinkable
 
 data GetImportMap = GetImportMap
     deriving (Eq, Show, Generic)
 instance Hashable GetImportMap
 instance NFData   GetImportMap
+instance RuleDiagnostics Publishes GetImportMap
 
 type instance RuleResult GetImportMap = ImportMap
 newtype ImportMap = ImportMap
   { importMap :: M.Map ModuleName NormalizedFilePath -- ^ Where are the modules imported by this file located?
   } deriving stock Show
     deriving newtype NFData
+    deriving anyclass Ageless
 
 data Splices = Splices
     { exprSplices :: [(LHsExpr GhcTc, LHsExpr GhcPs)]
@@ -273,6 +285,9 @@ data DocAndTyThingMap = DKMap
     , getArgDocMap  :: !ArgDocMap
     -- ^ Docs for arguments, e.g., function arguments and method arguments
     }
+-- The maps use names as keys.
+instance Ageless DocAndTyThingMap
+
 instance NFData DocAndTyThingMap where
     rnf (DKMap a b c) = rwhnf a `seq` rwhnf b `seq` rwhnf c
 
@@ -329,6 +344,7 @@ newtype GetModificationTime = GetModificationTime_
       -- ^ If false, missing file diagnostics are not reported
     }
     deriving (Generic)
+instance RuleDiagnostics Publishes GetModificationTime
 
 instance Show GetModificationTime where
     show _ = "GetModificationTime"
@@ -347,7 +363,7 @@ instance NFData   GetModificationTime
 
 data GetPhysicalModificationTime = GetPhysicalModificationTime
     deriving (Generic, Show, Eq)
-    deriving anyclass (Hashable, NFData)
+    deriving anyclass (Hashable, NFData, RuleDiagnostics Publishes)
 
 -- | Get the modification time of a file on disk, ignoring any version in the VFS.
 type instance RuleResult GetPhysicalModificationTime = FileVersion
@@ -375,18 +391,21 @@ data GetFileContents = GetFileContents
     deriving (Eq, Show, Generic)
 instance Hashable GetFileContents
 instance NFData   GetFileContents
+instance RuleDiagnostics Publishes GetFileContents
 
 data GetFileExists = GetFileExists
     deriving (Eq, Show, Generic)
 
 instance NFData   GetFileExists
 instance Hashable GetFileExists
+instance RuleDiagnostics Quiet GetFileExists
 
 data GetFileHash = GetFileHash
     deriving (Eq, Show, Generic)
 
 instance NFData   GetFileHash
 instance Hashable GetFileHash
+instance RuleDiagnostics Publishes GetFileHash
 
 data FileOfInterestStatus
   = OnDisk
@@ -437,16 +456,19 @@ data GetParsedModule = GetParsedModule
     deriving (Eq, Show, Generic)
 instance Hashable GetParsedModule
 instance NFData   GetParsedModule
+instance RuleDiagnostics Publishes GetParsedModule
 
 data GetParsedModuleWithComments = GetParsedModuleWithComments
     deriving (Eq, Show, Generic)
 instance Hashable GetParsedModuleWithComments
 instance NFData   GetParsedModuleWithComments
+instance RuleDiagnostics Quiet GetParsedModuleWithComments
 
 data GetLocatedImports = GetLocatedImports
     deriving (Eq, Show, Generic)
 instance Hashable GetLocatedImports
 instance NFData   GetLocatedImports
+instance RuleDiagnostics Publishes GetLocatedImports
 
 -- | Does this module need to be compiled?
 type instance RuleResult NeedsCompilation = Maybe LinkableType
@@ -455,66 +477,79 @@ data NeedsCompilation = NeedsCompilation
     deriving (Eq, Show, Generic)
 instance Hashable NeedsCompilation
 instance NFData   NeedsCompilation
+instance RuleDiagnostics Quiet NeedsCompilation
 
 data GetModuleGraph = GetModuleGraph
     deriving (Eq, Show, Generic)
 instance Hashable GetModuleGraph
 instance NFData   GetModuleGraph
+instance RuleDiagnostics Quiet GetModuleGraph
 
 data GetModArtefacts = GetModArtefacts
     deriving (Eq, Show, Generic)
 instance Hashable GetModArtefacts
 instance NFData   GetModArtefacts
+instance RuleDiagnostics Publishes GetModArtefacts
 
 data GetCoreFileHash = GetCoreFileHash
     deriving (Eq, Show, Generic)
 instance Hashable GetCoreFileHash
 instance NFData   GetCoreFileHash
+instance RuleDiagnostics Quiet GetCoreFileHash
 
-data GetModuleGraphTransDepsFingerprints = GetModuleGraphTransDepsFingerprints
+data GetModuleGraphTransDeps = GetModuleGraphTransDeps
     deriving (Eq, Show, Generic)
-instance Hashable GetModuleGraphTransDepsFingerprints
-instance NFData   GetModuleGraphTransDepsFingerprints
+instance Hashable GetModuleGraphTransDeps
+instance NFData   GetModuleGraphTransDeps
+instance RuleDiagnostics Quiet GetModuleGraphTransDeps
 
-data GetModuleGraphTransReverseDepsFingerprints = GetModuleGraphTransReverseDepsFingerprints
+data GetModuleGraphTransReverseDeps = GetModuleGraphTransReverseDeps
     deriving (Eq, Show, Generic)
-instance Hashable GetModuleGraphTransReverseDepsFingerprints
-instance NFData   GetModuleGraphTransReverseDepsFingerprints
+instance Hashable GetModuleGraphTransReverseDeps
+instance NFData   GetModuleGraphTransReverseDeps
+instance RuleDiagnostics Quiet GetModuleGraphTransReverseDeps
 
-data GetModuleGraphImmediateReverseDepsFingerprints = GetModuleGraphImmediateReverseDepsFingerprints
+data GetModuleGraphImmediateReverseDeps = GetModuleGraphImmediateReverseDeps
     deriving (Eq, Show, Generic)
-instance Hashable GetModuleGraphImmediateReverseDepsFingerprints
-instance NFData   GetModuleGraphImmediateReverseDepsFingerprints
+instance Hashable GetModuleGraphImmediateReverseDeps
+instance NFData   GetModuleGraphImmediateReverseDeps
+instance RuleDiagnostics Quiet GetModuleGraphImmediateReverseDeps
 
 data ReportImportCycles = ReportImportCycles
     deriving (Eq, Show, Generic)
 instance Hashable ReportImportCycles
 instance NFData   ReportImportCycles
+instance RuleDiagnostics Publishes ReportImportCycles
 
 data TypeCheck = TypeCheck
     deriving (Eq, Show, Generic)
 instance Hashable TypeCheck
 instance NFData   TypeCheck
+instance RuleDiagnostics Publishes TypeCheck
 
 data GetDocMap = GetDocMap
     deriving (Eq, Show, Generic)
 instance Hashable GetDocMap
 instance NFData   GetDocMap
+instance RuleDiagnostics Publishes GetDocMap
 
 data GetHieAst = GetHieAst
     deriving (Eq, Show, Generic)
 instance Hashable GetHieAst
 instance NFData   GetHieAst
+instance RuleDiagnostics Publishes GetHieAst
 
 data GetBindings = GetBindings
     deriving (Eq, Show, Generic)
 instance Hashable GetBindings
 instance NFData   GetBindings
+instance RuleDiagnostics Publishes GetBindings
 
 data GhcSession = GhcSession
     deriving (Eq, Show, Generic)
 instance Hashable GhcSession
 instance NFData   GhcSession
+instance RuleDiagnostics Publishes GhcSession
 
 newtype GhcSessionDeps = GhcSessionDeps_
     { -- | Load full ModSummary values in the GHC session.
@@ -522,6 +557,7 @@ newtype GhcSessionDeps = GhcSessionDeps_
         fullModSummary :: Bool
     }
     deriving newtype (Eq, Hashable, NFData)
+instance RuleDiagnostics Quiet GhcSessionDeps
 
 instance Show GhcSessionDeps where
     show (GhcSessionDeps_ False) = "GhcSessionDeps"
@@ -534,26 +570,31 @@ data GetModIfaceFromDisk = GetModIfaceFromDisk
     deriving (Eq, Show, Generic)
 instance Hashable GetModIfaceFromDisk
 instance NFData   GetModIfaceFromDisk
+instance RuleDiagnostics Publishes GetModIfaceFromDisk
 
 data GetModIfaceFromDiskAndIndex = GetModIfaceFromDiskAndIndex
     deriving (Eq, Show, Generic)
 instance Hashable GetModIfaceFromDiskAndIndex
 instance NFData   GetModIfaceFromDiskAndIndex
+instance RuleDiagnostics Quiet GetModIfaceFromDiskAndIndex
 
 data GetModIface = GetModIface
     deriving (Eq, Show, Generic)
 instance Hashable GetModIface
 instance NFData   GetModIface
+instance RuleDiagnostics Quiet GetModIface
 
 data IsFileOfInterest = IsFileOfInterest
     deriving (Eq, Show, Generic)
 instance Hashable IsFileOfInterest
 instance NFData   IsFileOfInterest
+instance RuleDiagnostics Quiet IsFileOfInterest
 
 data GetModSummaryWithoutTimestamps = GetModSummaryWithoutTimestamps
     deriving (Eq, Show, Generic)
 instance Hashable GetModSummaryWithoutTimestamps
 instance NFData   GetModSummaryWithoutTimestamps
+instance RuleDiagnostics Quiet GetModSummaryWithoutTimestamps
 
 -- | Map from module name to paths, from scanning the session's import
 -- directories. See Note [Session representatives].
@@ -561,11 +602,13 @@ data GetModulesPaths = GetModulesPaths
     deriving (Eq, Show, Generic)
 instance Hashable GetModulesPaths
 instance NFData   GetModulesPaths
+instance RuleDiagnostics Quiet GetModulesPaths
 
 data GetModSummary = GetModSummary
     deriving (Eq, Show, Generic)
 instance Hashable GetModSummary
 instance NFData   GetModSummary
+instance RuleDiagnostics Publishes GetModSummary
 
 -- See Note [Client configuration in Rules]
 -- | Get the client config stored in the ide state
@@ -573,12 +616,14 @@ data GetClientSettings = GetClientSettings
     deriving (Eq, Show, Generic)
 instance Hashable GetClientSettings
 instance NFData   GetClientSettings
+instance RuleDiagnostics Quiet GetClientSettings
 
 type instance RuleResult GetClientSettings = Hashed (Maybe Value)
 
 data AddWatchedFile = AddWatchedFile deriving (Eq, Show, Generic)
 instance Hashable AddWatchedFile
 instance NFData   AddWatchedFile
+instance RuleDiagnostics Quiet AddWatchedFile
 
 
 -- A local rule type to get caching. We want to use newCache, but it has
@@ -599,6 +644,7 @@ instance NFData IdeGhcSession where rnf !_ = ()
 data GhcSessionIO = GhcSessionIO deriving (Eq, Show, Generic)
 instance Hashable GhcSessionIO
 instance NFData   GhcSessionIO
+instance RuleDiagnostics Quiet GhcSessionIO
 
 makeLensesWith
     (lensRules & lensField .~ mappingNamer (pure . (++ "L")))

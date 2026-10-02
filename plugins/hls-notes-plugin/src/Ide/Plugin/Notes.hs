@@ -13,9 +13,11 @@ import           Data.Maybe                    (catMaybes, fromMaybe,
 import           Data.Text                     (Text)
 import qualified Data.Text                     as T
 import qualified Data.Text.Utf16.Rope.Mixed    as Rope
-import           Data.Traversable              (for)
 import           Development.IDE               hiding (line)
-import           Development.IDE.Core.Compat   (runActionE, useE)
+import           Development.IDE.Core.API      (Publishing (..),
+                                                RuleDiagnostics, fetch_, global,
+                                                noFile, ok, output, rule,
+                                                runQuery, withRuleRecorder)
 import           Development.IDE.Core.Shake    (toKnownFiles)
 import qualified Development.IDE.Core.Shake    as Shake
 import           Development.IDE.Core.Text     (lineAt)
@@ -39,7 +41,7 @@ data Log
 
 data GetNotesInFile = MkGetNotesInFile
     deriving (Show, Generic, Eq, Ord)
-    deriving anyclass (Hashable, NFData)
+    deriving anyclass (Hashable, NFData, RuleDiagnostics Quiet)
 -- The GetNotesInFile action scans the source file and extracts a map of note
 -- definitions (note name -> position) and a map of note references
 -- (note name -> [position]).
@@ -47,14 +49,14 @@ type instance RuleResult GetNotesInFile = (HM.HashMap Text Position, HM.HashMap 
 
 data GetNotes = MkGetNotes
     deriving (Show, Generic, Eq, Ord)
-    deriving anyclass (Hashable, NFData)
+    deriving anyclass (Hashable, NFData, RuleDiagnostics Quiet)
 -- GetNotes collects all note definition across all files in the
 -- project. It returns a map from note name to pair of (filepath, position).
 type instance RuleResult GetNotes = HashMap Text (NormalizedFilePath, Position)
 
 data GetNoteReferences = MkGetNoteReferences
     deriving (Show, Generic, Eq, Ord)
-    deriving anyclass (Hashable, NFData)
+    deriving anyclass (Hashable, NFData, RuleDiagnostics Quiet)
 -- GetNoteReferences collects all note references across all files in the
 -- project. It returns a map from note name to list of (filepath, position).
 type instance RuleResult GetNoteReferences = HashMap Text [(NormalizedFilePath, Position)]
@@ -83,22 +85,20 @@ descriptor recorder plId = (defaultPluginDescriptor plId "Provides goto definiti
     }
 
 findNotesRules :: Recorder (WithPriority Log) -> Rules ()
-findNotesRules recorder = do
-    defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \MkGetNotesInFile nfp -> do
-        findNotesInFile nfp recorder
+findNotesRules recorder = withRuleRecorder (cmapWithPrio LogShake recorder) $ do
+    rule $ \MkGetNotesInFile nfp ->
+        output <$> findNotesInFile nfp recorder
 
-    defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \MkGetNotes _ -> do
-        targets <- toKnownFiles <$> useNoFile_ GetKnownTargets
-        definedNotes <- catMaybes <$> mapM (\nfp -> fmap (HM.map (nfp,) . fst) <$> use MkGetNotesInFile nfp) (HS.toList targets)
-        pure $ Just $ HM.unions definedNotes
+    rule $ global $ \MkGetNotes -> do
+        targets <- HS.toList . toKnownFiles <$> use_ GetKnownTargets noFile
+        notes <- uses MkGetNotesInFile targets
+        pure $ ok $ HM.unions $ catMaybes $ zipWith (\nfp -> fmap (HM.map (nfp,) . fst)) targets notes
 
-    defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \MkGetNoteReferences _ -> do
-        targets <- toKnownFiles <$> useNoFile_ GetKnownTargets
-        definedReferences <- catMaybes <$> for (HS.toList targets) (\nfp -> do
-                references <- fmap snd <$> use MkGetNotesInFile nfp
-                pure $ fmap (HM.map (fmap (nfp,))) references
-            )
-        pure $ Just $ List.foldl' (HM.unionWith (<>)) HM.empty definedReferences
+    rule $ global $ \MkGetNoteReferences -> do
+        targets <- HS.toList . toKnownFiles <$> use_ GetKnownTargets noFile
+        notes <- uses MkGetNotesInFile targets
+        let definedReferences = catMaybes $ zipWith (\nfp -> fmap (HM.map (fmap (nfp,)) . snd)) targets notes
+        pure $ ok $ List.foldl' (HM.unionWith (<>)) HM.empty definedReferences
 
 err :: MonadError PluginError m => Text -> Maybe a -> m a
 err s = maybe (throwError $ PluginInternalError s) pure
@@ -128,7 +128,7 @@ listReferences state _ param
         case noteOpt of
             Nothing -> pure (InR Null)
             Just note -> do
-                notes <- runActionE "notes.definedNoteReferencess" state $ useE MkGetNoteReferences nfp
+                notes <- runQuery state $ fetch_ MkGetNoteReferences noFile
                 case HM.lookup note notes of
                   Nothing -> pure (InL [])
                   Just poss -> pure $ InL $ mapMaybe (\(noteFp, pos@(Position l' _)) ->
@@ -149,7 +149,7 @@ jumpToNote state _ param
         case noteOpt of
             Nothing -> pure (InR (InR Null))
             Just note -> do
-                notes <- runActionE "notes.definedNotes" state $ useE MkGetNotes nfp
+                notes <- runQuery state $ fetch_ MkGetNotes noFile
                 case HM.lookup note notes of
                   Nothing -> pure (InR (InR Null))
                   Just (noteFp, pos) -> pure $ InL $ Definition $ InL $
@@ -292,7 +292,7 @@ hoverNote state _ params
 
               mbRange = findNoteRange lineText note line
 
-          notes <- runActionE "notes.hover" state $ useE MkGetNotes nfp
+          notes <- runQuery state $ fetch_ MkGetNotes noFile
           case HM.lookup note notes of
             Nothing -> pure $ InL $ Hover (InL $ MarkupContent MarkupKind_Markdown "_No declaration available_") mbRange
 
@@ -348,15 +348,14 @@ autocomplete state _ params = do
           case uriToNormalizedFilePath nuri of
             Nothing -> pure []
 
-            Just nfp -> do
+            Just _ -> do
               let typed =
                    case T.breakOnEnd "[" linePrefix of
                     (_, "")   -> ""
                     (_, rest)-> T.strip rest
 
               notesMap <-
-                runActionE "notes.completion.notes" state $
-                  useE MkGetNotes nfp
+                runQuery state $ fetch_ MkGetNotes noFile
 
               let allNotes = HM.keys notesMap
                   matches =

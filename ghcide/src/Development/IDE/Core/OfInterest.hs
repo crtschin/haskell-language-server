@@ -19,6 +19,7 @@ module Development.IDE.Core.OfInterest(
     ) where
 
 import           Control.Concurrent.Strict
+import           Control.Lens                             ((&), (.~))
 import           Control.Monad
 import           Control.Monad.IO.Class
 import           Data.HashMap.Strict                      (HashMap)
@@ -31,6 +32,9 @@ import           Control.Concurrent.STM.Stats             (atomically,
 import           Data.Aeson                               (toJSON)
 import qualified Data.ByteString                          as BS
 import           Data.Maybe                               (catMaybes)
+import           Development.IDE.Core.API                 (Cutoff (..), cutoff,
+                                                           ok, rule,
+                                                           withRuleRecorder)
 import           Development.IDE.Core.ProgressReporting
 import           Development.IDE.Core.RuleTypes
 import           Development.IDE.Core.Shake               hiding (Log)
@@ -66,13 +70,11 @@ ofInterestRules :: Recorder (WithPriority Log) -> Rules ()
 ofInterestRules recorder = do
     addIdeGlobal . OfInterestVar =<< liftIO (newVar HashMap.empty)
     addIdeGlobal . GarbageCollectVar =<< liftIO (newVar False)
-    defineEarlyCutoff (cmapWithPrio LogShake recorder) $ RuleNoDiagnostics $ \IsFileOfInterest f -> do
+    withRuleRecorder (cmapWithPrio LogShake recorder) $ rule $ \IsFileOfInterest f -> do
         alwaysRerun
         filesOfInterest <- getFilesOfInterestUntracked
         let foi = maybe NotFOI IsFOI $ f `HashMap.lookup` filesOfInterest
-            fp  = summarize foi
-            res = (Just fp, Just foi)
-        return res
+        pure $ ok foi & cutoff .~ RerunOnChange (summarize foi)
     where
     summarize NotFOI                   = BS.singleton 0
     summarize (IsFOI OnDisk)           = BS.singleton 1

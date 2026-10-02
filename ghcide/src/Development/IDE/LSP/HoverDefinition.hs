@@ -18,11 +18,12 @@ module Development.IDE.LSP.HoverDefinition
 
 import           Control.Monad.Except           (ExceptT)
 import           Control.Monad.IO.Class
+import           Control.Monad.Trans.Class      (lift)
 import           Data.Maybe                     (fromMaybe)
 import           Development.IDE.Core.Actions
-import qualified Development.IDE.Core.Rules     as Shake
-import           Development.IDE.Core.Shake     (IdeAction, IdeState (..),
-                                                 runIdeAction)
+import           Development.IDE.Core.API       (MonadPluginFail, Query, await,
+                                                 runQuery)
+import           Development.IDE.Core.Shake     (IdeState (..))
 import           Development.IDE.Types.Location
 import           Ide.Logger
 import           Ide.Plugin.Error
@@ -60,12 +61,12 @@ references :: Recorder (WithPriority Log) -> PluginMethodHandler IdeState Method
 references recorder ide _ (ReferenceParams (TextDocumentIdentifier uri) pos _ _ _) = do
   nfp <- getNormalizedFilePathE uri
   liftIO $ logWith recorder Debug $ LogRequest "References" pos nfp
-  InL <$> (liftIO $ Shake.runAction "references" ide $ refsAtPoint nfp pos)
+  InL <$> runQuery ide (await "references" (lift $ refsAtPoint nfp pos))
 
 wsSymbols :: Recorder (WithPriority Log) -> PluginMethodHandler IdeState Method_WorkspaceSymbol
-wsSymbols recorder ide _ (WorkspaceSymbolParams _ _ query) = liftIO $ do
-  logWith recorder Debug $ LogWorkspaceSymbolRequest query
-  runIdeAction "WorkspaceSymbols" (shakeExtras ide) $ InL . fromMaybe [] <$> workspaceSymbols query
+wsSymbols recorder ide _ (WorkspaceSymbolParams _ _ query) = do
+  liftIO $ logWith recorder Debug $ LogWorkspaceSymbolRequest query
+  runQuery ide $ InL . fromMaybe [] <$> workspaceSymbols query
 
 foundHover :: (Maybe Range, [T.Text]) -> Hover |? Null
 foundHover (mbRange, contents) =
@@ -74,21 +75,23 @@ foundHover (mbRange, contents) =
 -- | Respond to and log a hover or go-to-definition request
 request
   :: T.Text
-  -> (NormalizedFilePath -> Position -> IdeAction (Maybe a))
+  -> (NormalizedFilePath -> Position -> Query (Maybe a))
   -> b
   -> (a -> b)
   -> Recorder (WithPriority Log)
   -> IdeState
   -> TextDocumentPositionParams
   -> ExceptT PluginError (HandlerM c) b
-request label getResults notFound found recorder ide (TextDocumentPositionParams (TextDocumentIdentifier uri) pos) = liftIO $ do
+request label getResults notFound found recorder ide (TextDocumentPositionParams (TextDocumentIdentifier uri) pos) = do
     mbResult <- case uriToFilePath' uri of
         Just path -> logAndRunRequest recorder label getResults ide pos path
         Nothing   -> pure Nothing
     pure $ maybe notFound found mbResult
 
-logAndRunRequest :: Recorder (WithPriority Log) -> T.Text -> (NormalizedFilePath -> Position -> IdeAction b) -> IdeState -> Position -> String -> IO b
+logAndRunRequest
+  :: (MonadIO m, MonadPluginFail m)
+  => Recorder (WithPriority Log) -> T.Text -> (NormalizedFilePath -> Position -> Query b) -> IdeState -> Position -> String -> m b
 logAndRunRequest recorder label getResults ide pos path = do
   let filePath = toNormalizedFilePath' path
-  logWith recorder Debug $ LogRequest label pos filePath
-  runIdeAction (T.unpack label) (shakeExtras ide) (getResults filePath pos)
+  liftIO $ logWith recorder Debug $ LogRequest label pos filePath
+  runQuery ide (getResults filePath pos)

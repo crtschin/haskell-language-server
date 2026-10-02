@@ -37,7 +37,10 @@ import qualified Data.Map.Strict                    as Map
 import           Data.Vector                        (Vector)
 import qualified Data.Vector                        as V
 import           Development.IDE
-import           Development.IDE.Core.Rules         (toIdeResult)
+import           Development.IDE.Core.API           (Output, Publishing (..),
+                                                     RuleDiagnostics, ok,
+                                                     output, rule,
+                                                     withRuleRecorder)
 import qualified Development.IDE.Core.Shake         as Shake
 import           Development.IDE.GHC.Compat.Util
 import           GHC.Generics                       (Generic)
@@ -157,6 +160,7 @@ simplify r =
 
 data GetCodeRange = GetCodeRange
     deriving (Eq, Show, Generic)
+instance RuleDiagnostics Quiet GetCodeRange
 
 instance Hashable GetCodeRange
 instance NFData   GetCodeRange
@@ -165,7 +169,7 @@ type instance RuleResult GetCodeRange = CodeRange
 
 codeRangeRule :: Recorder (WithPriority Log) -> Rules ()
 codeRangeRule recorder =
-    define (cmapWithPrio LogShake recorder) $ \GetCodeRange file -> handleError recorder $ do
+    withRuleRecorder (cmapWithPrio LogShake recorder) $ rule $ \GetCodeRange file -> handleError recorder $ do
         -- We need both 'HieAST' (for basic AST) and api annotations (for comments and some keywords).
         -- See https://gitlab.haskell.org/ghc/ghc/-/wikis/api-annotations
         HAR{hieAst, refMap} <- lift $ use_ GetHieAst file
@@ -176,15 +180,15 @@ codeRangeRule recorder =
 
         pure codeRange
 
--- | Handle error in 'Action'. Returns an 'IdeResult' with no value and no diagnostics on error. (but writes log)
-handleError :: Recorder (WithPriority msg) -> ExceptT msg Action a -> Action (IdeResult a)
+-- | Handle error in 'Action'. Returns an output with no value on error. (but writes log)
+handleError :: Recorder (WithPriority msg) -> ExceptT msg Action a -> Action (Output p a)
 handleError recorder action' = do
     valueEither <- runExceptT action'
     case valueEither of
         Left msg -> do
             logWith recorder Warning msg
-            pure $ toIdeResult (Left [])
-        Right value -> pure $ toIdeResult (Right value)
+            pure $ output Nothing
+        Right value -> pure $ ok value
 
 -- | Maps type CodeRangeKind to FoldingRangeKind
 crkToFrk :: CodeRangeKind -> FoldingRangeKind

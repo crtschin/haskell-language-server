@@ -138,6 +138,7 @@ library
     Development.IDE.Core.IdeConfiguration
     Development.IDE.Core.Internal
     Development.IDE.Core.Internal.Fail
+    Development.IDE.Core.Internal.Publishing
     Development.IDE.Core.Internal.Shake
     Development.IDE.Core.Internal.Tracked
     Development.IDE.Core.LookupMod

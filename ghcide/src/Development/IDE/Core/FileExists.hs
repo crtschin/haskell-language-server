@@ -15,11 +15,14 @@ where
 import           Control.Concurrent.STM.Stats          (atomically,
                                                         atomicallyNamed)
 import           Control.Exception
+import           Control.Lens                          ((&), (.~))
 import           Control.Monad.Extra
 import           Control.Monad.IO.Class
-import qualified Data.ByteString                       as BS
 import           Data.List                             (partition)
 import           Data.Maybe
+import           Development.IDE.Core.API              (Output, cutoff,
+                                                        cutoffOn, ok, rule,
+                                                        withRuleRecorder)
 import           Development.IDE.Core.FileStore        hiding (Log, LogShake)
 import qualified Development.IDE.Core.FileStore        as FileStore
 import           Development.IDE.Core.IdeConfiguration
@@ -198,7 +201,7 @@ fileExistsRules recorder lspEnv = do
 -- Requires an lsp client that provides WatchedFiles notifications, but assumes that this has already been checked.
 fileExistsRulesFast :: Recorder (WithPriority Log) -> (NormalizedFilePath -> Action Bool) -> Rules ()
 fileExistsRulesFast recorder isWatched =
-    defineEarlyCutoff (cmapWithPrio LogShake recorder) $ RuleNoDiagnostics $ \GetFileExists file -> do
+    withRuleRecorder (cmapWithPrio LogShake recorder) $ rule $ \GetFileExists file -> do
         isWF <- isWatched file
         if isWF
             then fileExistsFast file
@@ -221,7 +224,7 @@ For the VFS lookup, however, we won't get prompted to flush the result, so inste
 we use 'alwaysRerun'.
 -}
 
-fileExistsFast :: NormalizedFilePath -> Action (Maybe BS.ByteString, Maybe Bool)
+fileExistsFast :: NormalizedFilePath -> Action (Output p Bool)
 fileExistsFast file = do
     -- Could in principle use 'alwaysRerun' here, but it's too slwo, See Note [Invalidating file existence results]
     mp <- getFileExistsMapUntracked
@@ -232,21 +235,21 @@ fileExistsFast file = do
       -- We don't know about it: use the slow route.
       -- Note that we do *not* call 'fileExistsSlow', as that would trigger 'alwaysRerun'.
       Nothing    -> getFileExistsVFS file
-    pure (summarizeExists exist, Just exist)
+    pure $ existsOutput exist
 
-summarizeExists :: Bool -> Maybe BS.ByteString
-summarizeExists x = Just $ if x then BS.singleton 1 else BS.empty
+existsOutput :: Bool -> Output p Bool
+existsOutput x = ok x & cutoff .~ cutoffOn x
 
 fileExistsRulesSlow :: Recorder (WithPriority Log) -> Rules ()
 fileExistsRulesSlow recorder =
-  defineEarlyCutoff (cmapWithPrio LogShake recorder) $ RuleNoDiagnostics $ \GetFileExists file -> fileExistsSlow file
+  withRuleRecorder (cmapWithPrio LogShake recorder) $ rule $ \GetFileExists file -> fileExistsSlow file
 
-fileExistsSlow :: NormalizedFilePath -> Action (Maybe BS.ByteString, Maybe Bool)
+fileExistsSlow :: NormalizedFilePath -> Action (Output p Bool)
 fileExistsSlow file = do
     -- See Note [Invalidating file existence results]
     alwaysRerun
     exist <- getFileExistsVFS file
-    pure (summarizeExists exist, Just exist)
+    pure $ existsOutput exist
 
 getFileExistsVFS :: NormalizedFilePath -> Action Bool
 getFileExistsVFS file = do

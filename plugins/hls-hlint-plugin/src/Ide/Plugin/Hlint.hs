@@ -50,8 +50,7 @@ import           Development.IDE                                    hiding
                                                                      getExtensions)
 import           Development.IDE.Core.Compile                       (sourceParser)
 import           Development.IDE.Core.FileStore                     (getVersionedTextDoc)
-import           Development.IDE.Core.Rules                         (defineNoFile,
-                                                                     getParsedModuleWithComments)
+import           Development.IDE.Core.Rules                         (getParsedModuleWithComments)
 import           Development.IDE.Core.Shake                         (getDiagnostics)
 
 #if APPLY_REFACT
@@ -109,9 +108,18 @@ import           Language.LSP.Protocol.Types                        hiding
                                                                     (Null)
 import qualified Language.LSP.Protocol.Types                        as LSP
 
-import           Development.IDE.Core.Compat                        (runActionE,
-                                                                     useE,
-                                                                     useWithStaleE)
+import           Development.IDE.Core.API                           (Publishing (..),
+                                                                     RuleDiagnostics,
+                                                                     fetch_,
+                                                                     fromIdeResult,
+                                                                     global,
+                                                                     liftRules,
+                                                                     noFile, ok,
+                                                                     refresh_,
+                                                                     rule,
+                                                                     runQuery,
+                                                                     untrack,
+                                                                     withRuleRecorder)
 import qualified Development.IDE.Core.Shake                         as Shake
 import           Development.IDE.Spans.Pragmas                      (LineSplitTextEdits (LineSplitTextEdits),
                                                                      NextPragmaInfo (NextPragmaInfo),
@@ -187,6 +195,7 @@ data GetHlintDiagnostics = GetHlintDiagnostics
     deriving (Eq, Show, Generic)
 instance Hashable GetHlintDiagnostics
 instance NFData   GetHlintDiagnostics
+instance RuleDiagnostics Publishes GetHlintDiagnostics
 
 type instance RuleResult GetHlintDiagnostics = ()
 
@@ -198,18 +207,18 @@ type instance RuleResult GetHlintDiagnostics = ()
 -- - The client settings have changed, to honour the `hlintOn` setting, via `getClientConfigAction`
 -- - The hlint specific settings have changed, via `getHlintSettingsRule`
 rules :: Recorder (WithPriority Log) -> PluginId -> Rules ()
-rules recorder plugin = do
-  define (cmapWithPrio LogShake recorder) $ \GetHlintDiagnostics file -> do
+rules recorder plugin = withRuleRecorder (cmapWithPrio LogShake recorder) $ do
+  rule $ \GetHlintDiagnostics file -> do
     config <- getPluginConfigAction plugin
     let hlintOn = plcGlobalOn config && plcDiagnosticsOn config
     ideas <- if hlintOn then getIdeas recorder file else return (Right [])
-    return (diagnostics file ideas, Just ())
+    return $ fromIdeResult (diagnostics file ideas, Just ())
 
-  defineNoFile (cmapWithPrio LogShake recorder) $ \GetHlintSettings -> do
+  rule $ global $ \GetHlintSettings -> do
     (Config flags) <- getHlintConfig plugin
-    liftIO $ argsSettings flags
+    ok <$> liftIO (argsSettings flags)
 
-  action $ do
+  liftRules $ action $ do
     files <- Map.keys <$> getFilesOfInterestUntracked
     Shake.runWithSignal (Proxy @"kick/start/hlint") (Proxy @"kick/done/hlint") files GetHlintDiagnostics
 
@@ -292,7 +301,7 @@ rules recorder plugin = do
 getIdeas :: Recorder (WithPriority Log) -> NormalizedFilePath -> Action (Either ParseError [Idea])
 getIdeas recorder nfp = do
   logWith recorder Debug $ LogGetIdeas nfp
-  (flags, classify, hint) <- useNoFile_ GetHlintSettings
+  (flags, classify, hint) <- use_ GetHlintSettings noFile
 
   let applyHints' (Just (Right modEx)) = Right $ applyHints classify hint [modEx]
       applyHints' (Just (Left err)) = Left err
@@ -340,6 +349,7 @@ data GetHlintSettings = GetHlintSettings
     deriving (Eq, Show, Generic)
 instance Hashable GetHlintSettings
 instance NFData   GetHlintSettings
+instance RuleDiagnostics Quiet GetHlintSettings
 instance NFData Hint where rnf = rwhnf
 instance NFData Classify where rnf = rwhnf
 instance NFData ParseFlags where rnf = rwhnf
@@ -474,12 +484,11 @@ mkSuppressHintTextEdits dynFlags fileContents hint =
 
 ignoreHint :: Recorder (WithPriority Log) -> IdeState -> NormalizedFilePath -> VersionedTextDocumentIdentifier -> HintTitle -> IO (Either PluginError WorkspaceEdit)
 ignoreHint _recorder ideState nfp verTxtDocId ignoreHintTitle = runExceptT $ do
-  (_, fileContents) <- runActionE "Hlint.GetFileContents" ideState $ useE GetFileContents nfp
-  (msr, _) <- runActionE "Hlint.GetModSummaryWithoutTimestamps" ideState $ useWithStaleE GetModSummaryWithoutTimestamps nfp
+  (_, fileContents) <- runQuery ideState $ fetch_ GetFileContents nfp
+  dynFlags <- untrack . fmap (ms_hspp_opts . msrModSummary) <$> runQuery ideState (refresh_ GetModSummaryWithoutTimestamps nfp)
   case fileContents of
     Just contents -> do
-        let dynFlags = ms_hspp_opts $ msrModSummary msr
-            textEdits = mkSuppressHintTextEdits dynFlags contents ignoreHintTitle
+        let textEdits = mkSuppressHintTextEdits dynFlags contents ignoreHintTitle
             workspaceEdit =
                 LSP.WorkspaceEdit
                   (Just (M.singleton (verTxtDocId ^. LSP.uri) textEdits))
