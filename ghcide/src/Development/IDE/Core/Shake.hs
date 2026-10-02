@@ -11,8 +11,6 @@ module Development.IDE.Core.Shake(
     shakeEnqueue,
     newSession,
     use, useNoFile, uses, useWithStaleFast, useWithStaleFast', delayedAction,
-    useWithSeparateFingerprintRule,
-    useWithSeparateFingerprintRule_,
     FastResult(..),
     use_, useNoFile_, uses_,
     useWithStale, usesWithStale,

@@ -8,14 +8,15 @@ module Development.IDE.LSP.Outline
   )
 where
 
-import           Control.Monad.IO.Class
 import           Data.Foldable                  (toList)
 import           Data.Functor
 import           Data.Generics                  hiding (Prefix)
 import           Data.List.NonEmpty             (nonEmpty)
 import           Data.Maybe
+import           Development.IDE.Core.API       (Tracked (..), fastForward,
+                                                 fastForwardEach, refresh,
+                                                 runQuery)
 import           Development.IDE.Core.Rules
-import           Development.IDE.Core.Shake
 import           Development.IDE.GHC.Compat
 import           Development.IDE.GHC.Error      (rangeToRealSrcSpan,
                                                  realSrcSpanToRange)
@@ -34,29 +35,22 @@ import           Language.LSP.Protocol.Types    (DocumentSymbol (..),
 moduleOutline
   :: PluginMethodHandler IdeState Method_TextDocumentDocumentSymbol
 moduleOutline ideState _ DocumentSymbolParams{ _textDocument = TextDocumentIdentifier uri }
-  = liftIO $ case uriToFilePath uri of
+  = case uriToFilePath uri of
     Just (toNormalizedFilePath' -> fp) -> do
-      mb_decls <- fmap fst <$> runAction "Outline" ideState (useWithStale GetParsedModule fp)
+      mb_decls <- runQuery ideState (refresh GetParsedModule fp)
       pure $ case mb_decls of
         Nothing -> InL []
-        Just ParsedModule { pm_parsed_source = L _ltop HsModule { hsmodName, hsmodDecls, hsmodImports } }
+        Just (Tracked pm mapping)
           -> let
-               declSymbols  = mapMaybe documentSymbolForDecl hsmodDecls
-               moduleSymbol = hsmodName >>= \case
-                 (L (locA -> (RealSrcSpan l _)) m) -> Just $
-                   (defDocumentSymbol l :: DocumentSymbol)
-                     { _name  = printOutputable m
-                     , _kind  = SymbolKind_File
-                     , _range = Range (Position 0 0) (Position maxBound 0) -- _ltop is 0 0 0 0
-                     }
-                 _ -> Nothing
-               importSymbols = maybe [] pure $
-                  documentSymbolForImportSummary
-                    (mapMaybe documentSymbolForImport hsmodImports)
-               allSymbols    = case moduleSymbol of
-                 Nothing -> importSymbols <> declSymbols
+               symbols      = outlineSymbols <$> pm
+               -- The symbols that an edit changed drop out.
+               children     = fastForwardEach mapping (snd <$> symbols)
+               moduleSymbol = fastForward mapping =<< traverse fst symbols
+               allSymbols   = case moduleSymbol of
+                 Nothing -> children
                  Just x ->
-                   [ x { _children = Just (importSymbols <> declSymbols)
+                   [ x { _range = Range (Position 0 0) (Position maxBound 0) -- _ltop is 0 0 0 0
+                       , _children = Just children
                        }
                    ]
              in
@@ -64,6 +58,24 @@ moduleOutline ideState _ DocumentSymbolParams{ _textDocument = TextDocumentIdent
 
 
     Nothing -> pure $ InL []
+
+-- | The symbol of the module name, and the symbols of the imports and the
+-- declarations.
+outlineSymbols :: ParsedModule -> (Maybe DocumentSymbol, [DocumentSymbol])
+outlineSymbols ParsedModule { pm_parsed_source = L _ltop HsModule { hsmodName, hsmodDecls, hsmodImports } } =
+  (moduleSymbol, importSymbols <> declSymbols)
+  where
+    declSymbols  = mapMaybe documentSymbolForDecl hsmodDecls
+    moduleSymbol = hsmodName >>= \case
+      (L (locA -> (RealSrcSpan l _)) m) -> Just $
+        (defDocumentSymbol l :: DocumentSymbol)
+          { _name  = printOutputable m
+          , _kind  = SymbolKind_File
+          }
+      _ -> Nothing
+    importSymbols = maybe [] pure $
+       documentSymbolForImportSummary
+         (mapMaybe documentSymbolForImport hsmodImports)
 
 documentSymbolForDecl :: LHsDecl GhcPs -> Maybe DocumentSymbol
 documentSymbolForDecl (L (locA -> (RealSrcSpan l _)) (TyClD _ FamDecl { tcdFam = FamilyDecl { fdLName = L _ n, fdInfo, fdTyVars } }))

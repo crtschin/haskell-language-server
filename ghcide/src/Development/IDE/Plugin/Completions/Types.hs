@@ -20,6 +20,7 @@ import qualified Data.List                    as L
 import           Data.List.NonEmpty           (NonEmpty (..))
 import           Data.String                  (IsString (..))
 import           Data.Text                    (Text)
+import           Development.IDE.Core.API     (Publishing (..), RuleDiagnostics)
 import           Development.IDE.GHC.Compat
 import           Development.IDE.Graph        (RuleResult)
 import           Development.IDE.Spans.Common ()
@@ -37,11 +38,13 @@ data LocalCompletions = LocalCompletions
     deriving (Eq, Show, Generic)
 instance Hashable LocalCompletions
 instance NFData   LocalCompletions
+instance RuleDiagnostics Publishes LocalCompletions
 
 data NonLocalCompletions = NonLocalCompletions
     deriving (Eq, Show, Generic)
 instance Hashable NonLocalCompletions
 instance NFData   NonLocalCompletions
+instance RuleDiagnostics Publishes NonLocalCompletions
 
 -- From haskell-ide-engine/src/Haskell/Ide/Engine/LSP/Completions.hs
 

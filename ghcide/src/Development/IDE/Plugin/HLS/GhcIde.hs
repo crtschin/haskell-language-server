@@ -21,23 +21,19 @@ import           Text.Regex.TDFA.Text                ()
 
 data Log
   = LogNotifications Notifications.Log
-  | LogCompletions Completions.Log
-  | LogTypeLenses TypeLenses.Log
   | LogHover Hover.Log
   deriving Show
 
 instance Pretty Log where
   pretty = \case
     LogNotifications msg -> pretty msg
-    LogCompletions msg   -> pretty msg
-    LogTypeLenses msg    -> pretty msg
     LogHover msg         -> pretty msg
 
 descriptors :: Recorder (WithPriority Log) -> [PluginDescriptor IdeState]
 descriptors recorder =
   [ descriptor (cmapWithPrio LogHover recorder) "ghcide-hover-and-symbols",
-    Completions.descriptor (cmapWithPrio LogCompletions recorder) "ghcide-completions",
-    TypeLenses.descriptor (cmapWithPrio LogTypeLenses recorder) "ghcide-type-lenses",
+    Completions.descriptor "ghcide-completions",
+    TypeLenses.descriptor "ghcide-type-lenses",
     Notifications.descriptor (cmapWithPrio LogNotifications recorder) "ghcide-core"
   ]
 

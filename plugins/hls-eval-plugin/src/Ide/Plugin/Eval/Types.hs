@@ -41,9 +41,13 @@ import           Data.Aeson                      (FromJSON, ToJSON)
 import           Data.List                       (partition)
 import           Data.List.NonEmpty              (NonEmpty)
 import           Data.Map.Strict                 (Map)
+import qualified Data.Map.Strict                 as Map
 import           Data.String                     (IsString (..))
 import qualified Data.Text                       as T
 import           Development.IDE                 (Range, RuleResult)
+import           Development.IDE.Core.API        (Publishing (..),
+                                                  Remappable (..),
+                                                  RuleDiagnostics)
 import qualified Development.IDE.Core.Shake      as Shake
 import qualified Development.IDE.GHC.Compat.Core as Core
 import           Development.IDE.Graph.Classes
@@ -173,6 +177,7 @@ data IsEvaluating = IsEvaluating
     deriving (Eq, Show, Generic)
 instance Hashable IsEvaluating
 instance NFData   IsEvaluating
+instance RuleDiagnostics Quiet IsEvaluating
 
 type instance RuleResult IsEvaluating = Bool
 
@@ -180,6 +185,7 @@ data GetEvalComments = GetEvalComments
     deriving (Eq, Show, Generic)
 instance Hashable GetEvalComments
 instance NFData   GetEvalComments
+instance RuleDiagnostics Quiet GetEvalComments
 
 type instance RuleResult GetEvalComments = Comments
 data Comments = Comments
@@ -192,6 +198,13 @@ nullComments :: Comments -> Bool
 nullComments Comments{..} = null lineComments && null blockComments
 
 instance NFData Comments
+
+-- | A comment that an edit changed drops out.
+instance Remappable Comments where
+  remap f (Comments l b) = Just $ Comments (remapKeys l) (remapKeys b)
+    where
+      remapKeys :: Map Range v -> Map Range v
+      remapKeys m = Map.fromList [ (r', v) | (r, v) <- Map.toList m, Just r' <- [remap f r] ]
 
 newtype RawBlockComment = RawBlockComment {getRawBlockComment :: String}
     deriving (Show, Eq, Ord)

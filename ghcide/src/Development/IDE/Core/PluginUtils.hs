@@ -14,8 +14,8 @@ import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Maybe
 import qualified Data.Text                         as T
 import qualified Data.Text.Utf16.Rope.Mixed        as Rope
-import           Development.IDE.Core.FileStore
-import           Development.IDE.Core.Service      (runAction)
+import           Development.IDE.Core.API          (fetch_, runQuery)
+import           Development.IDE.Core.RuleTypes    (GetFileContents (..))
 import           Development.IDE.Core.Shake        (IdeState (shakeExtras))
 import qualified Development.IDE.Core.Shake        as Shake
 import           Development.IDE.GHC.Orphans       ()
@@ -111,7 +111,7 @@ mkFormattingHandlers f = mkPluginHandler SMethod_TextDocumentFormatting ( provid
     provider :: forall m. FormattingMethod m => SMethod m -> PluginMethodHandler IdeState m
     provider m ide _pid params
       | Just nfp <- LSP.uriToNormalizedFilePath $ LSP.toNormalizedUri uri = do
-        contentsMaybe <- liftIO $ runAction "mkFormattingHandlers" ide $ getFileContents nfp
+        contentsMaybe <- snd <$> runQuery ide (fetch_ GetFileContents nfp)
         case contentsMaybe of
           Just contents -> do
             let (typ, mtoken) = case m of

@@ -16,15 +16,16 @@ import           Data.Bits                       (Bits (setBit))
 import qualified Data.List                       as List
 import qualified Data.Maybe                      as Maybe
 import           Data.Text                       (Text, pack)
-import qualified Data.Text                       as T
 import qualified Data.Text                       as Text
 import           Data.Text.Utf16.Rope.Mixed      (Rope)
 import qualified Data.Text.Utf16.Rope.Mixed      as Rope
 import           Development.IDE                 (GhcSession (..), IdeState,
                                                   NormalizedFilePath,
-                                                  getFileContents, hscEnv,
-                                                  runAction, srcSpanToRange)
-import           Development.IDE.Core.Compat     (runActionE, useWithStaleE)
+                                                  GetFileContents (..),
+                                                  hscEnv,
+                                                  srcSpanToRange)
+import           Development.IDE.Core.API        (fetch_, refresh_, runQuery,
+                                                  untrack)
 import           Development.IDE.GHC.Compat
 import           Development.IDE.GHC.Compat.Util
 import           Ide.Plugin.Error                (PluginError)
@@ -54,9 +55,10 @@ insertNewPragma (NextPragmaInfo nextPragmaLine _) newPragma =  LSP.TextEdit prag
         pragmaInsertRange = LSP.Range pragmaInsertPosition pragmaInsertPosition
 
 getFirstPragma :: MonadIO m => PluginId -> IdeState -> NormalizedFilePath -> ExceptT PluginError m NextPragmaInfo
-getFirstPragma (PluginId pId) state nfp = do
-  (hscEnv -> hsc_dflags -> sessionDynFlags, _) <- runActionE (T.unpack pId <> ".GhcSession") state $ useWithStaleE GhcSession nfp
-  fileContents <- liftIO $ runAction (T.unpack pId <> ".GetFileContents") state $ getFileContents nfp
+getFirstPragma _ state nfp = do
+  sessionDynFlags <-
+    untrack . fmap (hsc_dflags . hscEnv) <$> runQuery state (refresh_ GhcSession nfp)
+  fileContents <- snd <$> runQuery state (fetch_ GetFileContents nfp)
   pure $ getNextPragmaInfo sessionDynFlags fileContents
 
 -- Pre-declaration comments parser -----------------------------------------------------

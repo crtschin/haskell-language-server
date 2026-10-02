@@ -12,8 +12,6 @@ module Development.IDE.Core.Compat
   , usesWithStale
   , useWithStale_
   , usesWithStale_
-  , useWithSeparateFingerprintRule
-  , useWithSeparateFingerprintRule_
     -- * Queries in handlers
   , IdeAction
   , pattern IdeAction
@@ -80,8 +78,7 @@ import           Development.IDE.Core.Internal        (IdeResult, IdeRule,
                                                        ShakeExtras (..),
                                                        getShakeExtras, mRunLspT,
                                                        mkDelayedAction,
-                                                       shakeEnqueue, untracked,
-                                                       useWithoutDependency)
+                                                       shakeEnqueue, untracked)
 import           Development.IDE.Core.PositionMapping (PositionMapping,
                                                        fromCurrentPosition,
                                                        fromCurrentRange,
@@ -152,20 +149,6 @@ usesWithStale_
   :: (Traversable f, IdeRule k v)
   => k -> f NormalizedFilePath -> Action (f (v, PositionMapping))
 usesWithStale_ k fs = fmap untracked <$> must recalls k fs
-
--- we use separate fingerprint rules to trigger the rebuild of the rule
-useWithSeparateFingerprintRule
-  :: (IdeRule k v, IdeRule k1 fingerprint)
-  => k1 -> k -> NormalizedFilePath -> Action (Maybe v)
-useWithSeparateFingerprintRule fingerKey key file =
-  use fingerKey file *> useWithoutDependency key noFile
-
--- we use separate fingerprint rules to trigger the rebuild of the rule
-useWithSeparateFingerprintRule_
-  :: (IdeRule k v, IdeRule k1 fingerprint)
-  => k1 -> k -> NormalizedFilePath -> Action v
-useWithSeparateFingerprintRule_ fingerKey key file =
-  useWithSeparateFingerprintRule fingerKey key file >>= required (PluginRuleFailed (T.pack (show key)))
 
 ------------------------------------------------------------------------------
 -- Queries in handlers

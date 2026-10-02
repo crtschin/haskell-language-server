@@ -4,7 +4,6 @@
 
 module Development.IDE.Plugin.Completions
     ( descriptor
-    , Log(..)
     , ghcideCompletionsPluginPriority
     ) where
 
@@ -12,22 +11,23 @@ import           Control.Concurrent.Async                 (concurrently)
 import           Control.Concurrent.STM.Stats             (readTVarIO)
 import           Control.Lens                             ((&), (.~), (?~))
 import           Control.Monad.IO.Class
-import           Control.Monad.Trans.Except               (ExceptT (ExceptT),
-                                                           withExceptT)
+import           Control.Monad.Trans.Class                (lift)
 import qualified Data.HashMap.Strict                      as Map
 import qualified Data.HashSet                             as Set
 import           Data.Maybe
 import qualified Data.Text                                as T
-import           Development.IDE.Core.Compat              (runIdeActionE,
-                                                           useWithStaleFastE)
+import           Development.IDE.Core.API                 (Tracked (..), await,
+                                                           fetch, fetch_,
+                                                           noFile, ok, output,
+                                                           recall, rule,
+                                                           runQuery, settle,
+                                                           untrack)
 import           Development.IDE.Core.Compile
-import           Development.IDE.Core.FileStore           (getUriContents)
-import           Development.IDE.Core.PositionMapping
+import           Development.IDE.Core.Internal.Tracked    (unsafeUnAge)
 import           Development.IDE.Core.RuleTypes
 import           Development.IDE.Core.Service             hiding (Log, LogShake)
 import           Development.IDE.Core.Shake               hiding (Log,
-                                                           knownTargets)
-import qualified Development.IDE.Core.Shake               as Shake
+                                                           knownTargets, use)
 import           Development.IDE.GHC.Compat
 import           Development.IDE.GHC.Util
 import           Development.IDE.Graph
@@ -40,10 +40,6 @@ import           Development.IDE.Types.HscEnvEq           (HscEnvEq (envPackageE
                                                            hscEnv)
 import qualified Development.IDE.Types.KnownTargets       as KT
 import           Development.IDE.Types.Location
-import           Ide.Logger                               (Pretty (pretty),
-                                                           Recorder,
-                                                           WithPriority,
-                                                           cmapWithPrio)
 import           Ide.Plugin.Error
 import           Ide.Types
 import qualified Language.LSP.Protocol.Lens               as L
@@ -57,22 +53,15 @@ import           Development.IDE.Core.Rules               (usePropertyAction)
 
 import qualified Ide.Plugin.Config                        as Config
 
-import           Development.IDE.Types.Options            (LinkTargets (..),
-                                                           linkTargets)
+import           Development.IDE.Types.Options            (linkTargets)
 import qualified GHC.LanguageExtensions                   as LangExt
-
-data Log = LogShake Shake.Log deriving Show
-
-instance Pretty Log where
-  pretty = \case
-    LogShake msg -> pretty msg
 
 ghcideCompletionsPluginPriority :: Natural
 ghcideCompletionsPluginPriority = defaultPluginPriority
 
-descriptor :: Recorder (WithPriority Log) -> PluginId -> PluginDescriptor IdeState
-descriptor recorder plId = (defaultPluginDescriptor plId desc)
-  { pluginRules = produceCompletions recorder
+descriptor :: PluginId -> PluginDescriptor IdeState
+descriptor plId = (defaultPluginDescriptor plId desc)
+  { pluginRules = produceCompletions
   , pluginHandlers = mkPluginHandler SMethod_TextDocumentCompletion getCompletionsLSP
                      <> mkResolveHandler SMethod_CompletionItemResolve resolveCompletion
   , pluginConfigDescriptor = defaultConfigDescriptor {configCustomConfig = mkCustomConfig properties}
@@ -82,37 +71,35 @@ descriptor recorder plId = (defaultPluginDescriptor plId desc)
     desc = "Provides Haskell completions"
 
 
-produceCompletions :: Recorder (WithPriority Log) -> Rules ()
-produceCompletions recorder = do
-    define (cmapWithPrio LogShake recorder) $ \LocalCompletions file -> do
-        let uri = fromNormalizedUri $ normalizedFilePathToUri file
-        mbPm <- useWithStale GetParsedModule file
-        case mbPm of
-            Just (pm, _) -> do
-                let cdata = localCompletionsForParsedModule uri pm
-                return ([], Just cdata)
-            _ -> return ([], Nothing)
-    define (cmapWithPrio LogShake recorder) $ \NonLocalCompletions file -> do
-        -- For non local completions we avoid depending on the parsed module,
-        -- synthesizing a fake module with an empty body from the buffer
-        -- in the ModSummary, which preserves all the imports
-        ms <- fmap fst <$> useWithStale GetModSummaryWithoutTimestamps file
-        mbSess <- fmap fst <$> useWithStale GhcSessionDeps file
+produceCompletions :: Rules ()
+produceCompletions = do
+  rule $ \LocalCompletions file -> do
+      let uri = fromNormalizedUri $ normalizedFilePathToUri file
+      mbPm <- recall GetParsedModule file
+      -- The completions keep the spans of a parse that can be stale.
+      pure $ output $ (\(Tracked pm _) -> localCompletionsForParsedModule uri (unsafeUnAge pm)) <$> mbPm
+  rule $ \NonLocalCompletions file -> do
+      -- For non local completions we avoid depending on the parsed module,
+      -- synthesizing a fake module with an empty body from the buffer
+      -- in the ModSummary, which preserves all the imports
+      -- The completions keep the spans of imports that can be stale.
+      ms <- fmap (\(Tracked m _) -> unsafeUnAge m) <$> recall GetModSummaryWithoutTimestamps file
+      mbSess <- fmap untrack <$> recall GhcSessionDeps file
 
-        case (ms, mbSess) of
-            (Just ModSummaryResult{..}, Just sess) -> do
-              let env = hscEnv sess
-              -- We do this to be able to provide completions of items that are not restricted to the explicit list
-              (global, inScope) <- liftIO $ tcRnImportDecls env (dropListFromImportDecl <$> msrImports) `concurrently` tcRnImportDecls env msrImports
-              case (global, inScope) of
-                  ((_, Just globalEnv), (_, Just inScopeEnv)) -> do
-                      let visibleMods = listVisibleModuleNames $ hscEnv sess
-                      let uri = fromNormalizedUri $ normalizedFilePathToUri file
-                      let cdata = cacheDataProducer uri visibleMods (ms_mod msrModSummary) globalEnv inScopeEnv msrImports
-                      return ([], Just cdata)
-                  (_diag, _) ->
-                      return ([], Nothing)
-            _ -> return ([], Nothing)
+      case (ms, mbSess) of
+          (Just ModSummaryResult{..}, Just sess) -> do
+            let env = hscEnv sess
+            -- We do this to be able to provide completions of items that are not restricted to the explicit list
+            (global, inScope) <- liftIO $ tcRnImportDecls env (dropListFromImportDecl <$> msrImports) `concurrently` tcRnImportDecls env msrImports
+            case (global, inScope) of
+                ((_, Just globalEnv), (_, Just inScopeEnv)) -> do
+                    let visibleMods = listVisibleModuleNames $ hscEnv sess
+                    let uri = fromNormalizedUri $ normalizedFilePathToUri file
+                    let cdata = cacheDataProducer uri visibleMods (ms_mod msrModSummary) globalEnv inScopeEnv msrImports
+                    pure (ok cdata)
+                (_diag, _) ->
+                    pure (output Nothing)
+          _ -> pure (output Nothing)
 
 -- Drop any explicit imports in ImportDecl if not hidden
 dropListFromImportDecl :: LImportDecl GhcPs -> LImportDecl GhcPs
@@ -128,15 +115,14 @@ resolveCompletion :: ResolveFunction IdeState CompletionResolveData Method_Compl
 resolveCompletion ide _pid comp@CompletionItem{_detail,_documentation,_data_} uri (CompletionResolveData _ needType (NameDetails mod occ)) =
   do
     file <- getNormalizedFilePathE uri
-    (sess,_) <- withExceptT (const PluginStaleResolve)
-                  $ runIdeActionE "CompletionResolve.GhcSessionDeps" (shakeExtras ide)
-                  $ useWithStaleFastE GhcSessionDeps file
+    sess <- handleMaybe PluginStaleResolve . fmap untrack
+              =<< runQuery ide (settle GhcSessionDeps file)
     let nc = ideNc $ shakeExtras ide
     name <- liftIO $ lookupNameCache nc mod occ
-    mdkm <- liftIO $ runIdeAction "CompletionResolve.GetDocMap" (shakeExtras ide) $ useWithStaleFast GetDocMap file
-    let (dm,km) = case mdkm of
-          Just (DKMap docMap tyThingMap _argDocMap, _) -> (docMap,tyThingMap)
-          Nothing                                      -> (mempty, mempty)
+    mdkm <- runQuery ide $ settle GetDocMap file
+    let (dm,km) = case untrack <$> mdkm of
+          Just (DKMap docMap tyThingMap _argDocMap) -> (docMap,tyThingMap)
+          Nothing                                   -> (mempty, mempty)
     doc <- case lookupNameEnv dm name of
       Just doc -> pure $ spanDocToMarkdown doc
       Nothing -> liftIO $ do
@@ -165,23 +151,23 @@ getCompletionsLSP :: PluginMethodHandler IdeState Method_TextDocumentCompletion
 getCompletionsLSP ide plId
   CompletionParams{_textDocument=TextDocumentIdentifier uri
                   ,_position=position
-                  ,_context=completionContext} = ExceptT $ do
-    contentsMaybe <-
-      liftIO $ runAction "Completion" ide $ getUriContents $ toNormalizedUri uri
-    fmap Right $ case (contentsMaybe, uriToFilePath' uri) of
+                  ,_context=completionContext} = do
+    contentsMaybe <- runQuery ide $
+      maybe (pure Nothing) (fmap snd . fetch_ GetFileContents) (uriToNormalizedFilePath $ toNormalizedUri uri)
+    case (contentsMaybe, uriToFilePath' uri) of
       (Just cnts, Just path) -> do
         let npath = toNormalizedFilePath' path
-        (ideOpts, compls, moduleExports, astres) <- liftIO $ runIdeAction "Completion" (shakeExtras ide) $ do
+        (ideOpts, compls, moduleExports, astres) <- runQuery ide $ do
             opts <- liftIO $ getIdeOptionsIO $ shakeExtras ide
-            localCompls <- useWithStaleFast LocalCompletions npath
-            nonLocalCompls <- useWithStaleFast NonLocalCompletions npath
-            pm <- useWithStaleFast GetParsedModule npath
-            binds <- fromMaybe (mempty, zeroMapping) <$> useWithStaleFast GetBindings npath
-            knownTargets <- liftIO $ runAction  "Completion" ide $ useNoFile GetKnownTargets
+            localCompls <- settle LocalCompletions npath
+            nonLocalCompls <- settle NonLocalCompletions npath
+            pm <- settle GetParsedModule npath
+            binds <- settle GetBindings npath
+            knownTargets <- fetch GetKnownTargets noFile
             let localModules = maybe [] (Map.keys . targetMap) knownTargets
             let lModules = mempty{importableModules = map toModueNameText localModules}
             -- set up the exports map including both package and project-level identifiers
-            packageExportsMapIO <- fmap(envPackageExports . fst) <$> useWithStaleFast GhcSession npath
+            packageExportsMapIO <- fmap (envPackageExports . untrack) <$> settle GhcSession npath
             packageExportsMap <- mapM liftIO packageExportsMapIO
             projectExportsMap <- liftIO $ readTVarIO (exportsMap $ shakeExtras ide)
             let exportsMap = fromMaybe mempty packageExportsMap <> projectExportsMap
@@ -189,14 +175,15 @@ getCompletionsLSP ide plId
             let moduleExports = getModuleExportsMap exportsMap
                 exportsCompItems = foldMap (map (fromIdentInfo uri) . Set.toList) . nonDetOccEnvElts . getExportsMap $ exportsMap
                 exportsCompls = mempty{anyQualCompls = exportsCompItems}
-            let compls = (fst <$> localCompls) <> (fst <$> nonLocalCompls) <> Just exportsCompls <> Just lModules
+            -- The cached completions keep spans that can be stale.
+            let cached (Tracked c _) = unsafeUnAge c
+                compls = (cached <$> localCompls) <> (cached <$> nonLocalCompls) <> Just exportsCompls <> Just lModules
 
             -- get HieAst if OverloadedRecordDot is enabled
-            let uses_overloaded_record_dot (ms_hspp_opts . msrModSummary -> dflags) = xopt LangExt.OverloadedRecordDot dflags
-            ms <- fmap fst <$> useWithStaleFast GetModSummaryWithoutTimestamps npath
-            astres <- case ms of
-              Just ms' | uses_overloaded_record_dot ms'
-                ->  useWithStaleFast GetHieAst npath
+            dflags <- fmap (untrack . fmap (ms_hspp_opts . msrModSummary)) <$> settle GetModSummaryWithoutTimestamps npath
+            astres <- case dflags of
+              Just dflags' | xopt LangExt.OverloadedRecordDot dflags'
+                ->  settle GetHieAst npath
               _ -> return Nothing
 
             pure (opts, fmap (,pm,binds) compls, moduleExports, astres)
@@ -209,7 +196,7 @@ getCompletionsLSP ide plId
               (_, _) -> do
                 let clientCaps = clientCapabilities $ shakeExtras ide
                     plugins = idePlugins $ shakeExtras ide
-                config <- liftIO $ runAction "" ide $ getCompletionsConfig plId
+                config <- runQuery ide $ await "Completion.config" (lift $ getCompletionsConfig plId)
 
                 let allCompletions = getCompletions plugins ideOpts cci' parsedMod astres bindMap pfix clientCaps config moduleExports uri
                 pure $ InL (orderedCompletions allCompletions)

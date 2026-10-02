@@ -8,7 +8,6 @@ module Development.IDE.Core.FileExists
   , watchedGlobs
   , allExtensions
   , GetFileExists(..)
-  , Log(..)
   )
 where
 
@@ -17,23 +16,19 @@ import           Control.Concurrent.STM.Stats          (atomically,
 import           Control.Exception
 import           Control.Monad.Extra
 import           Control.Monad.IO.Class
-import qualified Data.ByteString                       as BS
 import           Data.List                             (partition)
 import           Data.Maybe
+import           Development.IDE.Core.API              (Output, cutoffOn, ok,
+                                                        rule)
 import           Development.IDE.Core.FileStore        hiding (Log, LogShake)
-import qualified Development.IDE.Core.FileStore        as FileStore
 import           Development.IDE.Core.IdeConfiguration
 import           Development.IDE.Core.RuleTypes
 import           Development.IDE.Core.Shake            hiding (Log)
-import qualified Development.IDE.Core.Shake            as Shake
 import           Development.IDE.Graph
 import           Development.IDE.Types.Location
 import           Development.IDE.Types.Options
 import           Development.IDE.Types.Shake           (toKey)
 import qualified Focus
-import           Ide.Logger                            (Pretty (pretty),
-                                                        Recorder, WithPriority,
-                                                        cmapWithPrio)
 import           Ide.Plugin.Config                     (Config)
 import           Language.LSP.Protocol.Types
 import           Language.LSP.Server                   hiding (getVirtualFile)
@@ -90,16 +85,6 @@ type FileExistsMap = STM.Map NormalizedFilePath Bool
 newtype FileExistsMapVar = FileExistsMapVar FileExistsMap
 
 instance IsIdeGlobal FileExistsMapVar
-
-data Log
-  = LogFileStore FileStore.Log
-  | LogShake Shake.Log
-  deriving Show
-
-instance Pretty Log where
-  pretty = \case
-    LogFileStore msg -> pretty msg
-    LogShake msg     -> pretty msg
 
 -- | Grab the current global value of 'FileExistsMap' without acquiring a dependency
 getFileExistsMapUntracked :: Action FileExistsMap
@@ -168,8 +153,8 @@ allExtensions opts = [extIncBoot | ext <- optExtensions opts, extIncBoot <- [ext
 -- | Installs the 'getFileExists' rules.
 --   Provides a fast implementation if client supports dynamic watched files.
 --   Creates a global state as a side effect in that case.
-fileExistsRules :: Recorder (WithPriority Log) -> Maybe (LanguageContextEnv Config) -> Rules ()
-fileExistsRules recorder lspEnv = do
+fileExistsRules :: Maybe (LanguageContextEnv Config) -> Rules ()
+fileExistsRules lspEnv = do
   supportsWatchedFiles <- case lspEnv of
     Nothing      -> pure False
     Just lspEnv' -> liftIO $  runLspT lspEnv' isWatchSupported
@@ -190,15 +175,15 @@ fileExistsRules recorder lspEnv = do
         else const $ pure False
 
   if supportsWatchedFiles
-    then fileExistsRulesFast recorder isWatched
-    else fileExistsRulesSlow recorder
+    then fileExistsRulesFast isWatched
+    else fileExistsRulesSlow
 
-  fileStoreRules (cmapWithPrio LogFileStore recorder) isWatched
+  fileStoreRules isWatched
 
 -- Requires an lsp client that provides WatchedFiles notifications, but assumes that this has already been checked.
-fileExistsRulesFast :: Recorder (WithPriority Log) -> (NormalizedFilePath -> Action Bool) -> Rules ()
-fileExistsRulesFast recorder isWatched =
-    defineEarlyCutoff (cmapWithPrio LogShake recorder) $ RuleNoDiagnostics $ \GetFileExists file -> do
+fileExistsRulesFast :: (NormalizedFilePath -> Action Bool) -> Rules ()
+fileExistsRulesFast isWatched =
+    rule $ \GetFileExists file -> do
         isWF <- isWatched file
         if isWF
             then fileExistsFast file
@@ -221,7 +206,7 @@ For the VFS lookup, however, we won't get prompted to flush the result, so inste
 we use 'alwaysRerun'.
 -}
 
-fileExistsFast :: NormalizedFilePath -> Action (Maybe BS.ByteString, Maybe Bool)
+fileExistsFast :: NormalizedFilePath -> Action (Output p Bool)
 fileExistsFast file = do
     -- Could in principle use 'alwaysRerun' here, but it's too slwo, See Note [Invalidating file existence results]
     mp <- getFileExistsMapUntracked
@@ -232,21 +217,21 @@ fileExistsFast file = do
       -- We don't know about it: use the slow route.
       -- Note that we do *not* call 'fileExistsSlow', as that would trigger 'alwaysRerun'.
       Nothing    -> getFileExistsVFS file
-    pure (summarizeExists exist, Just exist)
+    pure $ existsOutput exist
 
-summarizeExists :: Bool -> Maybe BS.ByteString
-summarizeExists x = Just $ if x then BS.singleton 1 else BS.empty
+existsOutput :: Bool -> Output p Bool
+existsOutput x = cutoffOn x (ok x)
 
-fileExistsRulesSlow :: Recorder (WithPriority Log) -> Rules ()
-fileExistsRulesSlow recorder =
-  defineEarlyCutoff (cmapWithPrio LogShake recorder) $ RuleNoDiagnostics $ \GetFileExists file -> fileExistsSlow file
+fileExistsRulesSlow :: Rules ()
+fileExistsRulesSlow =
+  rule $ \GetFileExists file -> fileExistsSlow file
 
-fileExistsSlow :: NormalizedFilePath -> Action (Maybe BS.ByteString, Maybe Bool)
+fileExistsSlow :: NormalizedFilePath -> Action (Output p Bool)
 fileExistsSlow file = do
     -- See Note [Invalidating file existence results]
     alwaysRerun
     exist <- getFileExistsVFS file
-    pure (summarizeExists exist, Just exist)
+    pure $ existsOutput exist
 
 getFileExistsVFS :: NormalizedFilePath -> Action Bool
 getFileExistsVFS file = do

@@ -14,11 +14,11 @@ module Development.IDE.Core.OfInterest(
     setFilesOfInterest,
     kick, FileOfInterestStatus(..),
     OfInterestVar(..),
-    scheduleGarbageCollection,
-    Log(..)
+    scheduleGarbageCollection
     ) where
 
 import           Control.Concurrent.Strict
+import           Control.Lens                             ((&), (.~))
 import           Control.Monad
 import           Control.Monad.IO.Class
 import           Data.HashMap.Strict                      (HashMap)
@@ -31,48 +31,36 @@ import           Control.Concurrent.STM.Stats             (atomically,
 import           Data.Aeson                               (toJSON)
 import qualified Data.ByteString                          as BS
 import           Data.Maybe                               (catMaybes)
+import           Development.IDE.Core.API                 (Cutoff (..), cutoff,
+                                                           ok, rule)
 import           Development.IDE.Core.ProgressReporting
 import           Development.IDE.Core.RuleTypes
 import           Development.IDE.Core.Shake               hiding (Log)
-import qualified Development.IDE.Core.Shake               as Shake
 import           Development.IDE.Plugin.Completions.Types
 import           Development.IDE.Types.Exports
 import           Development.IDE.Types.Location
 import           Development.IDE.Types.Options            (IdeTesting (..))
 import           Development.IDE.Types.Shake              (toKey)
 import           GHC.TypeLits                             (KnownSymbol)
-import           Ide.Logger                               (Pretty (pretty),
-                                                           Priority (..),
-                                                           Recorder,
-                                                           WithPriority,
-                                                           cmapWithPrio,
+import           Ide.Logger                               (Priority (..),
                                                            logWith)
 import qualified Language.LSP.Protocol.Message            as LSP
 import qualified Language.LSP.Server                      as LSP
-
-data Log = LogShake Shake.Log
-  deriving Show
-
-instance Pretty Log where
-  pretty = \case
-    LogShake msg -> pretty msg
 
 newtype OfInterestVar = OfInterestVar (Var (HashMap NormalizedFilePath FileOfInterestStatus))
 
 instance IsIdeGlobal OfInterestVar
 
 -- | The rule that initialises the files of interest state.
-ofInterestRules :: Recorder (WithPriority Log) -> Rules ()
-ofInterestRules recorder = do
+ofInterestRules :: Rules ()
+ofInterestRules = do
     addIdeGlobal . OfInterestVar =<< liftIO (newVar HashMap.empty)
     addIdeGlobal . GarbageCollectVar =<< liftIO (newVar False)
-    defineEarlyCutoff (cmapWithPrio LogShake recorder) $ RuleNoDiagnostics $ \IsFileOfInterest f -> do
+    rule $ \IsFileOfInterest f -> do
         alwaysRerun
         filesOfInterest <- getFilesOfInterestUntracked
         let foi = maybe NotFOI IsFOI $ f `HashMap.lookup` filesOfInterest
-            fp  = summarize foi
-            res = (Just fp, Just foi)
-        return res
+        pure $ ok foi & cutoff .~ RerunOnChange (summarize foi)
     where
     summarize NotFOI                   = BS.singleton 0
     summarize (IsFOI OnDisk)           = BS.singleton 1

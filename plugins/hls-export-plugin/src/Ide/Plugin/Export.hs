@@ -11,7 +11,7 @@ import           Data.Text                        (Text)
 import qualified Data.Text                        as T
 import           Data.Text.Utf16.Rope.Mixed       (Rope)
 import           Development.IDE
-import           Development.IDE.Core.Compat      (runActionE, useE)
+import           Development.IDE.Core.API         (await, runQuery)
 import           Development.IDE.Core.Shake       (getDiagnostics)
 import           Development.IDE.GHC.Compat
 import           Development.IDE.GHC.Compat.Error (_TcRnUnusedTopBind,
@@ -39,14 +39,14 @@ quickCodeActionHandlers :: PluginMethodHandler IdeState Method_TextDocumentCodeA
 quickCodeActionHandlers state _plId (CodeActionParams _ _ doc range _) = do
   let uri = doc ^. L.uri
   nfp <- getNormalizedFilePathE uri
-  (ps, isCpp, mUnder, msrc) <- runActionE "Export.getInputs" state $ do
-    pm <- useE GetParsedModuleWithComments nfp
+  (ps, isCpp, mUnder, msrc) <- runQuery state $ await "Export.getInputs" $ do
+    pm <- use_ GetParsedModuleWithComments nfp
     let ps = pm_parsed_source pm
         isCpp = xopt LangExt.Cpp (ms_hspp_opts (pm_mod_summary pm))
         mUnder = if isExplicit ps then locateUnderCursor (range ^. L.start) ps else Nothing
     -- Only a CPP module about to be offered an action needs the buffer (to find
     -- directives in the export list), so skip the fetch otherwise.
-    msrc <- if isJust mUnder && isCpp then snd <$> useE GetFileContents nfp else pure Nothing
+    msrc <- if isJust mUnder && isCpp then snd <$> use_ GetFileContents nfp else pure Nothing
     pure (ps, isCpp, mUnder, msrc)
   case mUnder of
     -- A CPP module whose buffer we could not read may have directives in the

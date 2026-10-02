@@ -12,6 +12,8 @@ import qualified Data.Array                    as A
 import           Data.Default                  (Default (def))
 import           Data.Text                     (Text)
 import           Development.IDE               (Pretty (pretty), RuleResult)
+import           Development.IDE.Core.API      (Ageless, Publishing (..),
+                                                RuleDiagnostics)
 import qualified Development.IDE.Core.Shake    as Shake
 import           Development.IDE.GHC.Compat    hiding (loc)
 import           Development.IDE.Graph.Classes (Hashable)
@@ -40,6 +42,8 @@ data HsSemanticTokenType
   | TOperator-- operator
   | TModule -- module name
   deriving (Eq, Ord, Show, Enum, Bounded, Generic, Lift)
+
+instance Ageless HsSemanticTokenType
 
 -- type SemanticTokensConfig = SemanticTokensConfig_ Identity
 instance Default SemanticTokensConfig where
@@ -108,6 +112,7 @@ instance Show Loc where
 
 data GetSemanticTokens = GetSemanticTokens
   deriving (Eq, Show, Generic)
+instance RuleDiagnostics Quiet GetSemanticTokens
 
 instance Hashable GetSemanticTokens
 

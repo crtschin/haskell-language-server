@@ -9,27 +9,26 @@
 module Ide.Plugin.ExplicitFixity(descriptor, Log) where
 
 import           Control.DeepSeq
-import           Control.Monad.IO.Class               (MonadIO, liftIO)
+import           Control.Monad.IO.Class            (MonadIO, liftIO)
 import           Data.Either.Extra
 import           Data.Hashable
-import qualified Data.Map.Strict                      as M
+import qualified Data.Map.Strict                   as M
 import           Data.Maybe
-import qualified Data.Set                             as S
-import qualified Data.Text                            as T
-import           Development.IDE                      hiding (pluginHandlers,
-                                                       pluginRules)
-import           Development.IDE.Core.Compat          (runIdeActionE,
-                                                       useWithStaleFastE)
-import           Development.IDE.Core.PositionMapping (idDelta)
-import           Development.IDE.Core.Shake           (addPersistentRule)
-import qualified Development.IDE.Core.Shake           as Shake
+import qualified Data.Set                          as S
+import qualified Data.Text                         as T
+import           Development.IDE                   hiding (pluginHandlers,
+                                                    pluginRules)
+import           Development.IDE.Core.API          (Ageless, Tracked (..),
+                                                    persistentRule, rewind,
+                                                    runQuery, settle_, untrack)
+import qualified Development.IDE.Core.Shake        as Shake
 import           Development.IDE.GHC.Compat
-import qualified Development.IDE.GHC.Compat.Util      as Util
-import           Development.IDE.LSP.Notifications    (ghcideNotificationsPluginPriority)
+import qualified Development.IDE.GHC.Compat.Util   as Util
+import           Development.IDE.LSP.Notifications (ghcideNotificationsPluginPriority)
 import           Development.IDE.Spans.AtPoint
-import           GHC.Generics                         (Generic)
+import           GHC.Generics                      (Generic)
 import           Ide.Plugin.Error
-import           Ide.Types                            hiding (pluginId)
+import           Ide.Types                         hiding (pluginId)
 import           Language.LSP.Protocol.Message
 import           Language.LSP.Protocol.Types
 
@@ -45,10 +44,10 @@ descriptor recorder pluginId = (defaultPluginDescriptor pluginId "Provides fixit
 hover :: PluginMethodHandler IdeState Method_TextDocumentHover
 hover state _ (HoverParams (TextDocumentIdentifier uri) pos _) = do
     nfp <- getNormalizedFilePathE uri
-    runIdeActionE "ExplicitFixity" (shakeExtras state) $ do
-      (FixityMap fixmap, _) <-  useWithStaleFastE GetFixity nfp
-      (HAR{hieAst}, mapping) <- useWithStaleFastE GetHieAst nfp
-      let ns = getNamesAtPoint hieAst pos mapping
+    runQuery state $ do
+      FixityMap fixmap <- untrack <$> settle_ GetFixity nfp
+      Tracked har mapping <- settle_ GetHieAst nfp
+      let ns = maybe [] (getNamesAtPoint har) $ rewind mapping pos
           fs = mapMaybe (\n -> (n,) <$> M.lookup n fixmap) ns
       pure $ maybeToNull $ toHover fs
     where
@@ -64,12 +63,15 @@ hover state _ (HoverParams (TextDocumentIdentifier uri) pos _) = do
         fixityText :: (Name, Fixity) -> T.Text
 #if MIN_VERSION_GLASGOW_HASKELL(9,12,0,0)
         fixityText (name, Fixity precedence direction) =
+            printOutputable direction <> " " <> printOutputable precedence <> " `" <> printOutputable name <> "`"
 #else
         fixityText (name, Fixity _ precedence direction) =
-#endif
             printOutputable direction <> " " <> printOutputable precedence <> " `" <> printOutputable name <> "`"
+#endif
 
+-- | The map uses names as keys.
 newtype FixityMap = FixityMap (M.Map Name Fixity)
+instance Ageless FixityMap
 instance Show FixityMap where
   show _ = "FixityMap"
 
@@ -121,4 +123,4 @@ fixityRule recorder = do
         pure ([], Just (FixityMap fs))
 
     -- Ensure that this plugin doesn't block on startup
-    addPersistentRule GetFixity $ \_ -> pure $ Just (FixityMap M.empty, idDelta, Nothing)
+    persistentRule GetFixity $ \_ -> pure $ Just (FixityMap M.empty)

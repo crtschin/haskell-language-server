@@ -7,28 +7,27 @@
 
 module Ide.Plugin.Class.Types where
 
-import           Control.DeepSeq                 (rwhnf)
-import           Control.Monad.Extra             (mapMaybeM)
-import           Control.Monad.IO.Class          (liftIO)
-import           Control.Monad.Trans.Maybe       (runMaybeT)
+import           Control.DeepSeq               (rwhnf)
+import           Control.Monad.Extra           (mapMaybeM)
+import           Control.Monad.IO.Class        (liftIO)
 import           Data.Aeson
-import qualified Data.IntMap                     as IntMap
-import           Data.Maybe                      (fromMaybe, listToMaybe,
-                                                  mapMaybe, maybeToList)
-import qualified Data.Text                       as T
-import           Data.Unique                     (hashUnique, newUnique)
+import qualified Data.IntMap                   as IntMap
+import           Data.Maybe                    (fromMaybe, listToMaybe,
+                                                mapMaybe, maybeToList)
+import qualified Data.Text                     as T
+import           Data.Unique                   (hashUnique, newUnique)
 import           Development.IDE
-import           Development.IDE.Core.Compat     (useMT)
-import qualified Development.IDE.Core.Shake      as Shake
-import           Development.IDE.GHC.Compat      hiding (newUnique, (<+>))
-import           Development.IDE.GHC.Compat.Util (bagToList)
+import           Development.IDE.Core.API      (Publishing (..),
+                                                RuleDiagnostics, ok, rule)
+import qualified Development.IDE.Core.Shake    as Shake
+import           Development.IDE.GHC.Compat    hiding (newUnique, (<+>))
 import           Development.IDE.Graph.Classes
 import           GHC.Generics
 import           Ide.Plugin.Class.Utils
-import qualified Ide.Plugin.RangeMap             as RangeMap
+import qualified Ide.Plugin.RangeMap           as RangeMap
 import           Ide.Types
-import           Language.LSP.Protocol.Types     (TextEdit,
-                                                  VersionedTextDocumentIdentifier)
+import           Language.LSP.Protocol.Types   (TextEdit,
+                                                VersionedTextDocumentIdentifier)
 
 typeLensCommandId :: CommandId
 typeLensCommandId = "classplugin.typelens"
@@ -55,6 +54,7 @@ data AddMinimalMethodsParams = AddMinimalMethodsParams
 -- code lens (to display inferred signatures) consume this rule.
 data GetClassInstances = GetClassInstances
     deriving (Generic, Show, Eq, Ord, Hashable, NFData)
+instance RuleDiagnostics Quiet GetClassInstances
 
 data InstanceInfo = InstanceInfo
     { instSpan    :: SrcSpan
@@ -92,6 +92,7 @@ data InstanceBindLensCommand = InstanceBindLensCommand
 -- unique IDs for resolve.
 data GetInstanceBindLens = GetInstanceBindLens
     deriving (Generic, Show, Eq, Ord, Hashable, NFData)
+instance RuleDiagnostics Quiet GetInstanceBindLens
 
 data InstanceBindLens = InstanceBindLens
     { -- |What we need to provide the code lens. The range linked with
@@ -138,15 +139,15 @@ data BindInfo = BindInfo
       -- ^ The renamed method name of the binding.
     }
 
-getInstanceBindLensRule :: Recorder (WithPriority Log) -> Rules ()
-getInstanceBindLensRule recorder = do
-    defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \GetInstanceBindLens nfp -> runMaybeT $ do
+getInstanceBindLensRule :: Rules ()
+getInstanceBindLensRule =
+    rule $ \GetInstanceBindLens nfp -> ok <$> do
 #if MIN_VERSION_ghc(9,9,0)
-        tmr@(tmrRenamed ->  (hs_tyclds -> tycls, _, _, _, _)) <- useMT TypeCheck nfp
+        tmr@(tmrRenamed ->  (hs_tyclds -> tycls, _, _, _, _)) <- use_ TypeCheck nfp
 #else
-        tmr@(tmrRenamed ->  (hs_tyclds -> tycls, _, _, _)) <- useMT TypeCheck nfp
+        tmr@(tmrRenamed ->  (hs_tyclds -> tycls, _, _, _)) <- use_ TypeCheck nfp
 #endif
-        ClassInstancesResult instMap <- useMT GetClassInstances nfp
+        ClassInstancesResult instMap <- use_ GetClassInstances nfp
 
         let -- Correlate renamed ClsInstDecls with their InstanceInfo by source
             -- span (the only link between the renamed tree and tcg_insts), then
@@ -203,11 +204,11 @@ getInstanceBindLensRule recorder = do
                 toBindInfo (L l (L _ n)) = BindInfo (locA l) n
             in toBindInfo <$> filter (\(L _ name) -> unLoc name `notElem` existingSigNames) bindNames
 
-getClassInstancesRule :: Recorder (WithPriority Log) -> Rules ()
-getClassInstancesRule recorder = do
-    defineNoDiagnostics (cmapWithPrio LogShake recorder) $ \GetClassInstances nfp -> runMaybeT $ do
-        (tmrTypechecked -> gblEnv) <- useMT TypeCheck nfp
-        (hscEnv -> hsc) <- useMT GhcSession nfp
+getClassInstancesRule :: Rules ()
+getClassInstancesRule =
+    rule $ \GetClassInstances nfp -> ok <$> do
+        (tmrTypechecked -> gblEnv) <- use_ TypeCheck nfp
+        (hscEnv -> hsc) <- use_ GhcSession nfp
         (_, mInfos) <- liftIO $
             initTcWithGbl hsc gblEnv ghostSpan
 #if MIN_VERSION_ghc(9,7,0)

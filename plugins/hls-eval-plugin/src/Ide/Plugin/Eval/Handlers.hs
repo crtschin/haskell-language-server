@@ -43,7 +43,7 @@ import qualified Data.Text.Utf16.Rope.Mixed                   as Rope
 import           Development.IDE.Core.FileStore               (getUriContents, setSomethingModified)
 import           Development.IDE.Core.Rules                   (IdeState,
                                                                runAction)
-import           Development.IDE.Core.Shake                   (use_, uses_, VFSModified (VFSUnmodified), useWithSeparateFingerprintRule_)
+import           Development.IDE.Core.Shake                   (use_, uses_, VFSModified (VFSUnmodified))
 import           Development.IDE.GHC.Compat                   hiding (typeKind,
                                                                unitState)
 import           Development.IDE.GHC.Compat.Util              (OverridingBool (..))
@@ -71,12 +71,12 @@ import           GHC                                          (ClsInst,
 
 import           Development.IDE.Core.RuleTypes               (GetLinkable (GetLinkable),
                                                                GetModSummary (GetModSummary),
-                                                               GetModuleGraphTransDepsFingerprints (GetModuleGraphTransDepsFingerprints),
+                                                               GetModuleGraphTransDeps (GetModuleGraphTransDeps),
                                                                GhcSessionDeps (GhcSessionDeps),
                                                                ModSummaryResult (msrModSummary),
                                                                LinkableResult (linkableHomeMod),
                                                                TypeCheck (..),
-                                                               tmrTypechecked, GetModuleGraphTransDepsFingerprints(..), GetModuleGraph(..))
+                                                               tmrTypechecked)
 import qualified Development.IDE.GHC.Compat.Core              as Compat (InteractiveImport (IIModule))
 import qualified Development.IDE.GHC.Compat.Core              as SrcLoc (unLoc)
 import           Development.IDE.Types.HscEnvEq               (HscEnvEq (hscEnv))
@@ -84,9 +84,9 @@ import qualified GHC.LanguageExtensions.Type                  as LangExt (Extens
 import           Development.IDE.Session.Ghc                  (disableOptimisation)
 
 import           Data.List.Extra                              (unsnoc)
-import           Development.IDE.Core.Compat                  (runActionE,
-                                                               uriToFilePathE,
-                                                               useWithStaleE)
+import           Development.IDE.Core.API                     (fetch_,
+                                                               runQuery)
+import           Development.IDE.Core.Compat                  (uriToFilePathE)
 import           Development.IDE.Types.Shake                  (toKey)
 import           GHC.Types.SrcLoc                             (UnhelpfulSpanReason (UnhelpfulInteractive))
 #if MIN_VERSION_ghc(9,13,0)
@@ -167,8 +167,8 @@ mkRangeCommands recorder st plId textDocument =
                 let nfp = toNormalizedFilePath' fp
                     isLHS = isLiterate fp
                 dbg $ LogCodeLensFp fp
-                (comments, _) <-
-                    runActionE "eval.GetParsedModuleWithComments" st $ useWithStaleE GetEvalComments nfp
+                -- The rule maps the comments of a stale parse to its own version.
+                comments <- runQuery st $ fetch_ GetEvalComments nfp
                 dbg $ LogCodeLensComments comments
 
                 -- Extract 'EvalExpr's from source code
@@ -263,7 +263,7 @@ initialiseSessionForEval needs_quickcheck st nfp = do
     ms <- msrModSummary <$> use_ GetModSummary nfp
     deps_hsc <- hscEnv <$> use_ GhcSessionDeps nfp
 
-    linkables_needed <- transitiveDeps <$> useWithSeparateFingerprintRule_ GetModuleGraphTransDepsFingerprints GetModuleGraph nfp <*> pure nfp
+    linkables_needed <- transitiveDeps <$> use_ GetModuleGraphTransDeps nfp <*> pure nfp
     linkables <- uses_ GetLinkable (nfp : maybe [] transitiveModuleDeps linkables_needed)
     -- We unset the global rdr env in mi_globals when we generate interfaces
     -- See Note [Clearing mi_globals after generating an iface]
