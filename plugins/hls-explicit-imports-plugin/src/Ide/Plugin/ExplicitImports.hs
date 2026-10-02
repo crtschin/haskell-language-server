@@ -41,6 +41,7 @@ import qualified Data.Unique                          as U (hashUnique,
                                                             newUnique)
 import           Development.IDE                      hiding (pluginHandlers,
                                                        pluginRules)
+import qualified Development.IDE.Core.API             as API
 import           Development.IDE.Core.Compat          (runActionE,
                                                        toCurrentRangeE,
                                                        useWithStaleE)
@@ -321,6 +322,7 @@ instance Hashable ImportActions
 instance NFData ImportActions
 
 type instance RuleResult ImportActions = ImportActionsResult
+instance API.Key ImportActions
 
 data ResultType = ExplicitImport | RefineImport
   deriving Eq

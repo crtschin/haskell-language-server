@@ -16,6 +16,7 @@ import qualified Data.HashMap.Strict               as HashMap
 import           Data.Proxy
 import qualified Data.Text                         ()
 import           Development.IDE                   as D
+import qualified Development.IDE.Core.API          as API
 import qualified Development.IDE.Core.Shake        as Shake
 import           Development.IDE.Graph             (Key, alwaysRerun)
 import           Development.IDE.Types.Shake       (toKey)
@@ -55,6 +56,7 @@ instance Hashable IsCabalFileOfInterest
 instance NFData IsCabalFileOfInterest
 
 type instance RuleResult IsCabalFileOfInterest = CabalFileOfInterestResult
+instance API.Key IsCabalFileOfInterest
 
 data CabalFileOfInterestResult = NotCabalFOI | IsCabalFOI FileOfInterestStatus
   deriving (Eq, Show, Generic)

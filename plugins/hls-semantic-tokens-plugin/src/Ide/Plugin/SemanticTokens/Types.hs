@@ -12,6 +12,9 @@ import qualified Data.Array                    as A
 import           Data.Default                  (Default (def))
 import           Data.Text                     (Text)
 import           Development.IDE               (Pretty (pretty), RuleResult)
+import           Development.IDE.Core.API      (Publishing (..), Remappable,
+                                                RuleDiagnostics)
+import qualified Development.IDE.Core.API      as API
 import qualified Development.IDE.Core.Shake    as Shake
 import           Development.IDE.GHC.Compat    hiding (loc)
 import           Development.IDE.Graph.Classes (Hashable)
@@ -40,6 +43,8 @@ data HsSemanticTokenType
   | TOperator-- operator
   | TModule -- module name
   deriving (Eq, Ord, Show, Enum, Bounded, Generic, Lift)
+
+instance Remappable HsSemanticTokenType
 
 -- type SemanticTokensConfig = SemanticTokensConfig_ Identity
 instance Default SemanticTokensConfig where
@@ -108,6 +113,7 @@ instance Show Loc where
 
 data GetSemanticTokens = GetSemanticTokens
   deriving (Eq, Show, Generic)
+instance RuleDiagnostics Quiet GetSemanticTokens
 
 instance Hashable GetSemanticTokens
 
@@ -130,6 +136,7 @@ showRange :: Range -> String
 showRange (Range (Position l1 c1) (Position l2 c2)) = show l1 <> ":" <> show c1 <> "-" <> show l2 <> ":" <> show c2
 
 type instance RuleResult GetSemanticTokens = RangeHsSemanticTokenTypes
+instance API.Key GetSemanticTokens
 
 data HieFunMaskKind kind where
   HieFreshFun :: HieFunMaskKind Type

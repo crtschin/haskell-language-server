@@ -10,105 +10,93 @@ module Development.IDE.Plugin.TypeLenses (
   typeLensCommandId,
   GlobalBindingTypeSig (..),
   GetGlobalBindingTypeSigs (..),
-  GlobalBindingTypeSigsResult (..),
-  Log(..)
+  GlobalBindingTypeSigsResult (..)
   ) where
 
-import           Control.Concurrent.STM.Stats         (atomically)
-import           Control.DeepSeq                      (rwhnf)
-import           Control.Lens                         ((?~), (^?))
-import           Control.Monad                        (mzero)
-import           Control.Monad.Extra                  (whenMaybe)
-import           Control.Monad.IO.Class               (MonadIO (liftIO))
-import           Control.Monad.Trans.Class            (MonadTrans (lift))
-import           Data.Aeson.Types                     (toJSON)
-import qualified Data.Aeson.Types                     as A
-import           Data.List                            (find)
-import qualified Data.Map                             as Map
-import           Data.Maybe                           (catMaybes, isJust,
-                                                       maybeToList)
-import qualified Data.Text                            as T
-import           Development.IDE                      (FileDiagnostic (..),
-                                                       GhcSession (..),
-                                                       HscEnvEq (hscEnv),
-                                                       RuleResult, Rules, Uri,
-                                                       _SomeStructuredMessage,
-                                                       define,
-                                                       fdStructuredMessageL,
-                                                       srcSpanToRange,
-                                                       usePropertyAction)
-import           Development.IDE.Core.Compat          (runActionE,
-                                                       useWithStaleE)
-import           Development.IDE.Core.Compile         (TcModuleResult (..))
-import           Development.IDE.Core.PositionMapping (PositionMapping,
-                                                       fromCurrentRange,
-                                                       toCurrentRange)
-import           Development.IDE.Core.Rules           (IdeState, runAction)
-import           Development.IDE.Core.RuleTypes       (TypeCheck (TypeCheck))
-import           Development.IDE.Core.Service         (getDiagnostics)
-import           Development.IDE.Core.Shake           (getHiddenDiagnostics,
-                                                       use)
-import qualified Development.IDE.Core.Shake           as Shake
+import           Control.Concurrent.STM.Stats     (atomically)
+import           Control.DeepSeq                  (rwhnf)
+import           Control.Lens                     ((?~), (^?))
+import           Control.Monad                    (join, mzero)
+import           Control.Monad.Extra              (whenMaybe)
+import           Control.Monad.IO.Class           (MonadIO (liftIO))
+import           Control.Monad.Trans.Class        (MonadTrans (lift))
+import           Data.Aeson.Types                 (toJSON)
+import qualified Data.Aeson.Types                 as A
+import           Data.List                        (find)
+import qualified Data.Map                         as Map
+import           Data.Maybe                       (catMaybes, isJust, mapMaybe,
+                                                   maybeToList)
+import qualified Data.Text                        as T
+import           Development.IDE                  (FileDiagnostic (..),
+                                                   GhcSession (..),
+                                                   HscEnvEq (hscEnv),
+                                                   RuleResult, Rules, Uri,
+                                                   _SomeStructuredMessage,
+                                                   fdStructuredMessageL,
+                                                   srcSpanToRange,
+                                                   usePropertyAction)
+import           Development.IDE.Core.API         (Key, Publishing (..),
+                                                   RuleDiagnostics, answerAt,
+                                                   await, current,
+                                                   fastForwardEach, lastKnown,
+                                                   optionally, output, rule,
+                                                   runQuery, use)
+import           Development.IDE.Core.Compile     (TcModuleResult (..))
+import           Development.IDE.Core.Rules       (IdeState)
+import           Development.IDE.Core.RuleTypes   (TypeCheck (TypeCheck))
+import           Development.IDE.Core.Service     (getDiagnostics, runAction)
+import           Development.IDE.Core.Shake       (getHiddenDiagnostics)
 import           Development.IDE.GHC.Compat
-import           Development.IDE.GHC.Compat.Error     (_TcRnMessage,
-                                                       _TcRnMissingSignature,
-                                                       msgEnvelopeErrorL)
-import           Development.IDE.GHC.Util             (printName)
+import           Development.IDE.GHC.Compat.Error (_TcRnMessage,
+                                                   _TcRnMissingSignature,
+                                                   msgEnvelopeErrorL)
+import           Development.IDE.GHC.Util         (printName)
 import           Development.IDE.Graph.Classes
-import           Development.IDE.Types.Location       (Position (Position, _line),
-                                                       Range (Range, _end, _start))
-import           GHC.Core.TyCo.Tidy                   (tidyOpenType)
-import           GHC.Generics                         (Generic)
-import           Ide.Logger                           (Pretty (pretty),
-                                                       Recorder, WithPriority,
-                                                       cmapWithPrio)
+import           Development.IDE.Types.Location   (Position (Position, _line),
+                                                   Range (Range, _end, _start))
+import           GHC.Core.TyCo.Tidy               (tidyOpenType)
+import           GHC.Generics                     (Generic)
 import           Ide.Plugin.Error
 import           Ide.Plugin.Properties
-import           Ide.PluginUtils                      (mkLspCommand)
-import           Ide.Types                            (CommandFunction,
-                                                       CommandId (CommandId),
-                                                       PluginCommand (PluginCommand),
-                                                       PluginDescriptor (..),
-                                                       PluginId,
-                                                       PluginMethodHandler,
-                                                       ResolveFunction,
-                                                       configCustomConfig,
-                                                       defaultConfigDescriptor,
-                                                       defaultPluginDescriptor,
-                                                       mkCustomConfig,
-                                                       mkPluginHandler,
-                                                       mkResolveHandler,
-                                                       pluginSendRequest)
-import qualified Language.LSP.Protocol.Lens           as L
-import           Language.LSP.Protocol.Message        (Method (Method_CodeLensResolve, Method_TextDocumentCodeLens),
-                                                       SMethod (..))
-import           Language.LSP.Protocol.Types          (ApplyWorkspaceEditParams (ApplyWorkspaceEditParams),
-                                                       CodeLens (..),
-                                                       CodeLensParams (CodeLensParams, _textDocument),
-                                                       Command, Diagnostic (..),
-                                                       Null (Null),
-                                                       TextDocumentIdentifier (TextDocumentIdentifier),
-                                                       TextEdit (TextEdit),
-                                                       WorkspaceEdit (WorkspaceEdit),
-                                                       type (|?) (..))
-
-data Log = LogShake Shake.Log deriving Show
-
-instance Pretty Log where
-  pretty = \case
-    LogShake msg -> pretty msg
+import           Ide.PluginUtils                  (mkLspCommand)
+import           Ide.Types                        (CommandFunction,
+                                                   CommandId (CommandId),
+                                                   PluginCommand (PluginCommand),
+                                                   PluginDescriptor (..),
+                                                   PluginId,
+                                                   PluginMethodHandler,
+                                                   ResolveFunction,
+                                                   configCustomConfig,
+                                                   defaultConfigDescriptor,
+                                                   defaultPluginDescriptor,
+                                                   mkCustomConfig,
+                                                   mkPluginHandler,
+                                                   mkResolveHandler,
+                                                   pluginSendRequest)
+import qualified Language.LSP.Protocol.Lens       as L
+import           Language.LSP.Protocol.Message    (Method (Method_CodeLensResolve, Method_TextDocumentCodeLens),
+                                                   SMethod (..))
+import           Language.LSP.Protocol.Types      (ApplyWorkspaceEditParams (ApplyWorkspaceEditParams),
+                                                   CodeLens (..),
+                                                   CodeLensParams (CodeLensParams, _textDocument),
+                                                   Command, Diagnostic (..),
+                                                   Null (Null),
+                                                   TextDocumentIdentifier (TextDocumentIdentifier),
+                                                   TextEdit (TextEdit),
+                                                   WorkspaceEdit (WorkspaceEdit),
+                                                   type (|?) (..))
 
 
 typeLensCommandId :: T.Text
 typeLensCommandId = "typesignature.add"
 
-descriptor :: Recorder (WithPriority Log) -> PluginId -> PluginDescriptor IdeState
-descriptor recorder plId =
+descriptor :: PluginId -> PluginDescriptor IdeState
+descriptor plId =
   (defaultPluginDescriptor plId desc)
     { pluginHandlers = mkPluginHandler SMethod_TextDocumentCodeLens codeLensProvider
                     <> mkResolveHandler SMethod_CodeLensResolve codeLensResolveProvider
     , pluginCommands = [PluginCommand (CommandId typeLensCommandId) "adds a signature" commandHandler]
-    , pluginRules = rules recorder
+    , pluginRules = rules
     , pluginConfigDescriptor = defaultConfigDescriptor {configCustomConfig = mkCustomConfig properties}
     }
   where
@@ -148,25 +136,22 @@ codeLensProvider ideState pId CodeLensParams{_textDocument = TextDocumentIdentif
         -- diagnostic would then be parse failed). See
         -- https://github.com/haskell/haskell-language-server/pull/3558 for this
         -- discussion.
-        generateLensFromGlobal sigs mp = do
-          [ CodeLens newRange Nothing (Just $ toJSON TypeLensesResolve)
-            | sig <- sigs
-            , Just range <- [srcSpanToRange (gbSrcSpan sig)]
-            , Just newRange <- [toCurrentRange mp range]]
+        generateLensFromGlobal :: [Range] -> [CodeLens]
+        generateLensFromGlobal ranges =
+          [ CodeLens range Nothing (Just $ toJSON TypeLensesResolve) | range <- ranges ]
     if mode == Always || mode == Exported
       then do
         -- In this mode we get the global bindings from the
         -- GlobalBindingTypeSigs rule.
-        (GlobalBindingTypeSigsResult gblSigs, gblSigsMp) <-
-          runActionE "codeLens.GetGlobalBindingTypeSigs" ideState
-          $ useWithStaleE GetGlobalBindingTypeSigs nfp
+        gblSigs <- runQuery ideState $ await $ lastKnown GetGlobalBindingTypeSigs nfp
         -- Depending on whether we only want exported or not we filter our list
         -- of signatures to get what we want
-        let relevantGlobalSigs =
+        let relevantGlobalSigs (GlobalBindingTypeSigsResult sigs) =
               if mode == Exported
-                then filter gbExported gblSigs
-                else gblSigs
-        pure $ InL $ generateLensFromGlobal relevantGlobalSigs gblSigsMp
+                then filter gbExported sigs
+                else sigs
+            ranges = fastForwardEach (mapMaybe (srcSpanToRange . gbSrcSpan) . relevantGlobalSigs <$> gblSigs)
+        pure $ InL $ generateLensFromGlobal ranges
       else do
         -- For this mode we exclusively use diagnostics to create the lenses.
         -- However we will still use the GlobalBindingTypeSigs to resolve them.
@@ -178,19 +163,14 @@ codeLensProvider ideState pId CodeLensParams{_textDocument = TextDocumentIdentif
 codeLensResolveProvider :: ResolveFunction IdeState TypeLensesResolve Method_CodeLensResolve
 codeLensResolveProvider ideState pId lens@CodeLens{_range} uri TypeLensesResolve = do
   nfp <- getNormalizedFilePathE uri
-  (gblSigs@(GlobalBindingTypeSigsResult _), pm) <-
-    runActionE "codeLens.GetGlobalBindingTypeSigs" ideState
-    $ useWithStaleE GetGlobalBindingTypeSigs nfp
+  gblSigs <- runQuery ideState $ await $ lastKnown GetGlobalBindingTypeSigs nfp
   -- regardless of how the original lens was generated, we want to get the range
   -- that the global bindings rule would expect here, hence the need to reverse
   -- position map the range, regardless of whether it was position mapped in the
   -- beginning or freshly taken from diagnostics.
-  newRange <- handleMaybe PluginStaleResolve (fromCurrentRange pm _range)
-  -- We also pass on the PositionMapping so that the generated text edit can
-  -- have the range adjusted.
-  (title, edit) <-
-        handleMaybe PluginStaleResolve $ suggestGlobalSignature' False (Just gblSigs) (Just pm) newRange
-  pure $ lens & L.command ?~ generateLensCommand pId uri title edit
+  (title, currentEdit) <- handleMaybe PluginStaleResolve $ join $
+    answerAt (suggestGlobalSignature' False . Just) _range gblSigs
+  pure $ lens & L.command ?~ generateLensCommand pId uri title currentEdit
 
 generateLensCommand :: PluginId -> Uri -> T.Text -> TextEdit -> Command
 generateLensCommand pId uri title edit =
@@ -219,7 +199,7 @@ suggestSignature isQuickFix mGblSigs diag =
 suggestGlobalSignature :: Bool -> Maybe GlobalBindingTypeSigsResult -> FileDiagnostic -> Maybe (T.Text, TextEdit)
 suggestGlobalSignature isQuickFix mGblSigs diag@FileDiagnostic {fdLspDiagnostic = Diagnostic {_range}}
   | isGlobalDiagnostic diag =
-    suggestGlobalSignature' isQuickFix mGblSigs Nothing _range
+    suggestGlobalSignature' isQuickFix mGblSigs _range
   | otherwise = Nothing
 
 isGlobalDiagnostic :: FileDiagnostic -> Bool
@@ -230,29 +210,24 @@ isGlobalDiagnostic diag = diag ^? fdStructuredMessageL
                                   . _TcRnMissingSignature
                                 & isJust
 
--- If a PositionMapping is supplied, this function will call
--- gblBindingTypeSigToEdit with it to create a TextEdit in the right location.
-suggestGlobalSignature' :: Bool -> Maybe GlobalBindingTypeSigsResult -> Maybe PositionMapping -> Range -> Maybe (T.Text, TextEdit)
-suggestGlobalSignature' isQuickFix mGblSigs pm range
+suggestGlobalSignature' :: Bool -> Maybe GlobalBindingTypeSigsResult -> Range -> Maybe (T.Text, TextEdit)
+suggestGlobalSignature' isQuickFix mGblSigs range
   |   Just (GlobalBindingTypeSigsResult sigs) <- mGblSigs
     , Just sig <- find (\x -> sameThing (gbSrcSpan x) range) sigs
     , signature <- T.pack $ gbRendered sig
     , title <- if isQuickFix then "add signature: " <> signature else signature
-    , Just action <- gblBindingTypeSigToEdit sig pm =
+    , Just action <- gblBindingTypeSigToEdit sig =
     Just (title, action)
   | otherwise = Nothing
 
 sameThing :: SrcSpan -> Range -> Bool
 sameThing s1 s2 = (_start <$> srcSpanToRange s1) == (_start <$> Just s2)
 
-gblBindingTypeSigToEdit :: GlobalBindingTypeSig -> Maybe PositionMapping -> Maybe TextEdit
-gblBindingTypeSigToEdit GlobalBindingTypeSig{..} mmp
+gblBindingTypeSigToEdit :: GlobalBindingTypeSig -> Maybe TextEdit
+gblBindingTypeSigToEdit GlobalBindingTypeSig{..}
   | Just Range{..} <- srcSpanToRange $ getSrcSpan gbName
     , startOfLine <- Position (_line _start) 0
-    , beforeLine <- Range startOfLine startOfLine
-    -- If `mmp` is `Nothing`, return the original range,
-    -- otherwise we apply `toCurrentRange`, and the guard should fail if `toCurrentRange` failed.
-    , Just range <- maybe (Just beforeLine) (flip toCurrentRange beforeLine) mmp
+    , range <- Range startOfLine startOfLine
     -- We need to flatten the signature, as otherwise long signatures are
     -- rendered on multiple lines with invalid formatting.
     , renderedFlat <- unwords $ lines gbRendered
@@ -292,6 +267,8 @@ showDocRdrEnv env rdrEnv = showSDocForUser' env (mkPrintUnqualifiedDefault env r
 
 data GetGlobalBindingTypeSigs = GetGlobalBindingTypeSigs
   deriving (Generic, Show, Eq, Ord, Hashable, NFData)
+instance RuleDiagnostics Publishes GetGlobalBindingTypeSigs
+instance Key GetGlobalBindingTypeSigs
 
 data GlobalBindingTypeSig = GlobalBindingTypeSig
   { gbName     :: Name
@@ -312,14 +289,13 @@ instance NFData GlobalBindingTypeSigsResult where
 
 type instance RuleResult GetGlobalBindingTypeSigs = GlobalBindingTypeSigsResult
 
-rules :: Recorder (WithPriority Log) -> Rules ()
-rules recorder = do
-  define (cmapWithPrio LogShake recorder) $ \GetGlobalBindingTypeSigs nfp -> do
-    tmr <- use TypeCheck nfp
+rules :: Rules ()
+rules = do
+  rule $ \GetGlobalBindingTypeSigs nfp -> do
     -- we need session here for tidying types
-    hsc <- use GhcSession nfp
-    result <- liftIO $ gblBindingType (hscEnv <$> hsc) (tmrTypechecked <$> tmr)
-    pure ([], result)
+    (tmr, hsc) <- use $ (,) <$> optionally (current TypeCheck nfp) <*> optionally (current GhcSession nfp)
+    sigs <- liftIO $ gblBindingType (hscEnv <$> hsc) (tmrTypechecked <$> tmr)
+    pure (output sigs)
 
 gblBindingType :: Maybe HscEnv -> Maybe TcGblEnv -> IO (Maybe GlobalBindingTypeSigsResult)
 gblBindingType (Just hsc) (Just gblEnv) = do

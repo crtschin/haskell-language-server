@@ -12,8 +12,6 @@ module Development.IDE.Core.Compat
   , usesWithStale
   , useWithStale_
   , usesWithStale_
-  , useWithSeparateFingerprintRule
-  , useWithSeparateFingerprintRule_
     -- * Queries in handlers
   , IdeAction
   , pattern IdeAction
@@ -88,9 +86,7 @@ import           Development.IDE.Core.Internal        (IdeResult, IdeRule,
                                                        lastKnownAt, mRunLspT,
                                                        mkDelayedAction,
                                                        optionally, shakeEnqueue,
-                                                       untracked,
-                                                       useWithoutDependency,
-                                                       wait)
+                                                       untracked, wait)
 import qualified Development.IDE.Core.Internal        as Core
 import           Development.IDE.Core.Internal.Types  (MonadPluginFail,
                                                        required)
@@ -183,20 +179,6 @@ usesWithStale_
   :: (Traversable f, IdeRule k v)
   => k -> f NormalizedFilePath -> Action (f (v, PositionMapping))
 usesWithStale_ k fs = Use.use (traverse (fmap untracked . lastKnownAt k) fs)
-
--- we use separate fingerprint rules to trigger the rebuild of the rule
-useWithSeparateFingerprintRule
-  :: (IdeRule k v, IdeRule k1 fingerprint)
-  => k1 -> k -> NormalizedFilePath -> Action (Maybe v)
-useWithSeparateFingerprintRule fingerKey key file =
-  use fingerKey file *> useWithoutDependency key emptyFilePath
-
--- we use separate fingerprint rules to trigger the rebuild of the rule
-useWithSeparateFingerprintRule_
-  :: (IdeRule k v, IdeRule k1 fingerprint)
-  => k1 -> k -> NormalizedFilePath -> Action v
-useWithSeparateFingerprintRule_ fingerKey key file =
-  useWithSeparateFingerprintRule fingerKey key file >>= required (PluginRuleFailed (T.pack (show key)))
 
 ------------------------------------------------------------------------------
 -- Queries in handlers
@@ -413,13 +395,12 @@ defineNoDiagnostics recorder op = defineEarlyCutoff recorder $ RuleNoDiagnostics
 defineEarlyCutoff :: IdeRule k v => Recorder (WithPriority Log) -> RuleBody k v -> Rules ()
 defineEarlyCutoff recorder = \case
   Rule op -> defineRule recorder True (==) $ \k f _ -> op k f
-  RuleNoDiagnostics op ->
-    defineRule recorder False (==) $ \k f _ ->
-      second (mempty,) <$> op k f
+  RuleNoDiagnostics op -> defineRule recorder False (==) $ \k f _ -> quiet <$> op k f
   RuleWithCustomNewnessCheck{..} ->
-    defineRule recorder False newnessCheck $ \k f _ ->
-      second (mempty,) <$> build k f
+    defineRule recorder False newnessCheck $ \k f _ -> quiet <$> build k f
   RuleWithOldValue op -> defineRule recorder True (==) op
+  where
+    quiet (fp, r) = (fp, ([], r))
 
 defineNoFile :: IdeRule k v => Recorder (WithPriority Log) -> (k -> Action v) -> Rules ()
 defineNoFile recorder f = defineNoDiagnostics recorder $ \k file ->

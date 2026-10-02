@@ -21,7 +21,7 @@ import           Control.Concurrent.STM           (newTVarIO)
 import           Control.Monad.IO.Class           (liftIO)
 import           Development.IDE.Core.Debouncer
 import           Development.IDE.Core.FileExists  (fileExistsRules)
-import           Development.IDE.Core.OfInterest  hiding (Log, LogShake)
+import           Development.IDE.Core.OfInterest
 import           Development.IDE.Graph
 import           Development.IDE.Session          (SessionLoaderPendingBarrierVar (..))
 import           Development.IDE.Types.Options    (IdeOptions (..))
@@ -35,8 +35,6 @@ import qualified Language.LSP.Protocol.Types      as LSP
 import qualified Language.LSP.Server              as LSP
 
 import           Control.Monad
-import qualified Development.IDE.Core.FileExists  as FileExists
-import qualified Development.IDE.Core.OfInterest  as OfInterest
 import           Development.IDE.Core.Shake       hiding (Log)
 import qualified Development.IDE.Core.Shake       as Shake
 import           Development.IDE.Types.Monitoring (Monitoring)
@@ -46,15 +44,11 @@ import           System.Environment               (lookupEnv)
 
 data Log
   = LogShake Shake.Log
-  | LogOfInterest OfInterest.Log
-  | LogFileExists FileExists.Log
   deriving Show
 
 instance Pretty Log where
   pretty = \case
     LogShake msg      -> pretty msg
-    LogOfInterest msg -> pretty msg
-    LogFileExists msg -> pretty msg
 
 
 ------------------------------------------------------------
@@ -95,8 +89,8 @@ initialise recorder defaultConfig plugins mainRule lspEnv debouncer options with
             pendingBarrier <- liftIO $ newTVarIO Nothing
             addIdeGlobal $ SessionLoaderPendingBarrierVar pendingBarrier
             addIdeGlobal $ GlobalIdeOptions options
-            ofInterestRules (cmapWithPrio LogOfInterest recorder)
-            fileExistsRules (cmapWithPrio LogFileExists recorder) lspEnv
+            ofInterestRules
+            fileExistsRules lspEnv
             mainRule)
         rootDir
 

@@ -11,6 +11,7 @@ import qualified Data.Text                     as T
 import           Development.IDE               (GetParsedModule (GetParsedModule),
                                                 IdeState, RuleResult, Rules,
                                                 define, realSrcSpanToRange, use)
+import qualified Development.IDE.Core.API      as API
 import           Development.IDE.Core.Compat   (runActionE, useE)
 import qualified Development.IDE.Core.Shake    as Shake
 import           Development.IDE.GHC.Compat    hiding (getSrcSpan)
@@ -51,6 +52,7 @@ instance Hashable CollectLiterals
 instance NFData CollectLiterals
 
 type instance RuleResult CollectLiterals = CollectLiteralsResult
+instance API.Key CollectLiterals
 
 data CollectLiteralsResult = CLR
     { literals          :: RangeMap Literal

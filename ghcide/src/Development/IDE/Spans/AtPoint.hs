@@ -8,6 +8,9 @@
 -- These are all pure functions that should execute quickly.
 module Development.IDE.Spans.AtPoint (
     atPoint
+  , definitionSymbols
+  , typeDefinitionSymbols
+  , implementationSymbols
   , gotoDefinition
   , gotoTypeDefinition
   , gotoImplementation
@@ -18,32 +21,35 @@ module Development.IDE.Spans.AtPoint (
   , FOIReferences(..)
   , defRowToSymbolInfo
   , getNamesAtPoint
-  , toCurrentLocation
   , rowToLoc
   , nameToLocation
   , LookupModule
   ) where
 
 
-import           GHC.Data.FastString                  (LexicalFastString (..),
-                                                       lengthFS)
-import qualified GHC.Utils.Outputable                 as O
+import           GHC.Data.FastString                   (LexicalFastString (..),
+                                                        lengthFS)
+import qualified GHC.Utils.Outputable                  as O
 
 import           Development.IDE.GHC.Error
-import           Development.IDE.GHC.Orphans          ()
+import           Development.IDE.GHC.Orphans           ()
 import           Development.IDE.Types.Location
-import           Language.LSP.Protocol.Types          hiding
-                                                      (SemanticTokenAbsolute (..))
-import           Prelude                              hiding (mod)
+import           Language.LSP.Protocol.Types           hiding
+                                                       (SemanticTokenAbsolute (..))
+import           Prelude                               hiding (mod)
 
 -- compiler and infrastructure
-import           Development.IDE.Core.Compile         (setNonHomeFCHook)
-import           Development.IDE.Core.PositionMapping
+import           Development.IDE.Core.Compile          (setNonHomeFCHook)
+import           Development.IDE.Core.Internal.Tracked (Remappable (..),
+                                                        Tracked (..), answerAt,
+                                                        fastForward,
+                                                        fastForwardEach, rewind,
+                                                        untrackStale)
 import           Development.IDE.Core.RuleTypes
 import           Development.IDE.GHC.Compat
-import qualified Development.IDE.GHC.Compat.Util      as Util
-import           Development.IDE.GHC.Util             (printOutputable,
-                                                       printOutputableOneLine)
+import qualified Development.IDE.GHC.Compat.Util       as Util
+import           Development.IDE.GHC.Util              (printOutputable,
+                                                        printOutputableOneLine)
 import           Development.IDE.Spans.Common
 import           Development.IDE.Types.Options
 
@@ -51,54 +57,54 @@ import           Control.Monad.Extra
 import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Class
 import           Control.Monad.Trans.Maybe
-import qualified Data.HashMap.Strict                  as HM
-import qualified Data.Map.Strict                      as M
+import qualified Data.HashMap.Strict                   as HM
+import qualified Data.Map.Strict                       as M
 import           Data.Maybe
-import qualified Data.Text                            as T
+import qualified Data.Text                             as T
 
-import qualified Data.Array                           as A
+import qualified Data.Array                            as A
+import           Data.Bifunctor                        (first)
 import           Data.Either
-import           Data.List.Extra                      (dropEnd1, nubOrd)
+import           Data.List.Extra                       (dropEnd1, nubOrd)
 
 
-import           Control.Lens                         ((^.))
-import           Data.Either.Extra                    (eitherToMaybe)
-import           Data.List                            (isSuffixOf, sortOn)
-import           Data.Set                             (Set)
-import qualified Data.Set                             as S
+import           Control.Lens                          ((^.))
+import           Data.Either.Extra                     (eitherToMaybe)
+import           Data.List                             (isSuffixOf, sortOn)
+import           Data.Set                              (Set)
+import qualified Data.Set                              as S
 import           Data.Tree
-import qualified Data.Tree                            as T
-import           Data.Version                         (showVersion)
-import           Development.IDE.Core.LookupMod       (LookupModule, lookupMod)
-import           Development.IDE.Core.Shake           (ShakeExtras (..),
-                                                       runIdeAction)
-import           Development.IDE.Types.Shake          (WithHieDb)
-import           GHC.Iface.Ext.Types                  (EvVarSource (..),
-                                                       HieAST (..),
-                                                       HieASTs (..),
-                                                       HieArgs (..),
-                                                       HieType (..),
-                                                       HieTypeFix (..),
-                                                       Identifier,
-                                                       IdentifierDetails (..),
-                                                       NodeInfo (..), Scope,
-                                                       Span)
-import           GHC.Iface.Ext.Utils                  (EvidenceInfo (..),
-                                                       RefMap, getEvidenceTree,
-                                                       getScopeFromContext,
-                                                       hieTypeToIface,
-                                                       isEvidenceContext,
-                                                       isEvidenceUse,
-                                                       isOccurrence, nodeInfo,
-                                                       recoverFullType,
-                                                       selectSmallestContaining)
-import           HieDb                                hiding (pointCommand,
-                                                       withHieDb)
-import qualified Language.LSP.Protocol.Lens           as L
-import           System.Directory                     (doesFileExist)
+import qualified Data.Tree                             as T
+import           Data.Version                          (showVersion)
+import           Development.IDE.Core.LookupMod        (LookupModule, lookupMod)
+import           Development.IDE.Core.Shake            (ShakeExtras (..))
+import           Development.IDE.Types.Shake           (WithHieDb)
+import           GHC.Iface.Ext.Types                   (EvVarSource (..),
+                                                        HieAST (..),
+                                                        HieASTs (..),
+                                                        HieArgs (..),
+                                                        HieType (..),
+                                                        HieTypeFix (..),
+                                                        Identifier,
+                                                        IdentifierDetails (..),
+                                                        NodeInfo (..), Scope,
+                                                        Span)
+import           GHC.Iface.Ext.Utils                   (EvidenceInfo (..),
+                                                        RefMap, getEvidenceTree,
+                                                        getScopeFromContext,
+                                                        hieTypeToIface,
+                                                        isEvidenceContext,
+                                                        isEvidenceUse,
+                                                        isOccurrence, nodeInfo,
+                                                        recoverFullType,
+                                                        selectSmallestContaining)
+import           HieDb                                 hiding (pointCommand,
+                                                        withHieDb)
+import qualified Language.LSP.Protocol.Lens            as L
+import           System.Directory                      (doesFileExist)
 
 -- | HieFileResult for files of interest, along with the position mappings
-newtype FOIReferences = FOIReferences (HM.HashMap NormalizedFilePath (HieAstResult, PositionMapping))
+newtype FOIReferences = FOIReferences (HM.HashMap NormalizedFilePath (Tracked HieAstResult))
 
 computeTypeReferences :: Foldable f => f (HieAST Type) -> M.Map Name [Span]
 computeTypeReferences = foldr (\ast m -> M.unionWith (++) (go ast) m) M.empty
@@ -122,26 +128,20 @@ foiReferencesAtPoint
 foiReferencesAtPoint file pos (FOIReferences asts) =
   case HM.lookup file asts of
     Nothing -> ([],[],[])
-    Just (HAR _ hf _ _ _,mapping) ->
-      let names = getNamesAtPoint hf pos mapping
+    Just ast ->
+      let names = fromMaybe [] (answerAt getNamesAtPoint pos ast)
           adjustedLocs = HM.foldr go [] asts
-          go (HAR _ _ rf tr _, goMapping) xs = refs ++ typerefs ++ xs
+          go goAst xs = fastForwardEach (refsOf <$> goAst) ++ xs
+          refsOf (HAR _ _ rf tr _) = refs ++ typerefs
             where
-              refs = concatMap (mapMaybe (toCurrentLocation goMapping . realSrcSpanToLocation . fst))
+              refs = concatMap (map (realSrcSpanToLocation . fst))
                                (mapMaybe (\n -> M.lookup (Right n) rf) names)
-              typerefs = concatMap (mapMaybe (toCurrentLocation goMapping . realSrcSpanToLocation))
+              typerefs = concatMap (map realSrcSpanToLocation)
                                    (mapMaybe (`M.lookup` tr) names)
         in (names, adjustedLocs,map fromNormalizedFilePath $ HM.keys asts)
 
-getNamesAtPoint :: HieASTs a -> Position -> PositionMapping -> [Name]
-getNamesAtPoint hf pos mapping =
-  concat $ pointCommand hf posFile (rights . M.keys . getSourceNodeIds)
-    where
-      posFile = fromMaybe pos $ fromCurrentPosition mapping pos
-
-toCurrentLocation :: PositionMapping -> Location -> Maybe Location
-toCurrentLocation mapping (Location uri range) =
-  Location uri <$> toCurrentRange mapping range
+getNamesAtPoint :: HieAstResult -> Position -> [Name]
+getNamesAtPoint (HAR _ hf _ _ _) p = concat $ pointCommand hf p (rights . M.keys . getSourceNodeIds)
 
 referencesAtPoint
   :: MonadIO m
@@ -189,13 +189,11 @@ typeRowToLoc (row:.info) = do
     start = Position (fromIntegral $ typeRefSLine row - 1) (fromIntegral $ typeRefSCol row -1)
     end = Position (fromIntegral $ typeRefELine row - 1) (fromIntegral $ typeRefECol row -1)
 
-documentHighlight
-  :: Monad m
-  => HieASTs a
-  -> RefMap a
-  -> Position
-  -> MaybeT m [DocumentHighlight]
-documentHighlight hf rf pos = pure highlights
+documentHighlight :: HieAstResult -> Position -> [DocumentHighlight]
+documentHighlight (HAR _ hf rf _ _) = documentHighlight' hf rf
+
+documentHighlight' :: HieASTs a -> RefMap a -> Position -> [DocumentHighlight]
+documentHighlight' hf rf pos = highlights
   where
     -- We don't want to show document highlights for evidence variables, which are supposed to be invisible
     notEvidence = not . any isEvidenceContext . identInfo
@@ -215,46 +213,60 @@ documentHighlight hf rf pos = pure highlights
     isBadSpan :: Name -> RealSrcSpan -> Bool
     isBadSpan n sp = srcSpanStartLine sp /= srcSpanEndLine sp || (srcSpanEndCol sp - srcSpanStartCol sp > lengthFS (occNameFS $ nameOccName n))
 
--- | Locate the type definition of the name at a given position.
-gotoTypeDefinition
-  :: MonadIO m
-  => WithHieDb
-  -> LookupModule m
-  -> IdeOptions
-  -> HieAstResult
-  -> Position
-  -> MaybeT m [(Location, Identifier)]
-gotoTypeDefinition withHieDb lookupModule ideOpts srcSpans pos
-  = lift $ typeLocationsAtPoint withHieDb lookupModule ideOpts pos srcSpans
+-- | The names at a position whose definitions to locate.
+definitionSymbols :: HieAstResult -> Position -> [Identifier]
+definitionSymbols (HAR _ ast _ _ _) pos =
+  concat $ pointCommand ast pos (M.keys . getNodeIds)
 
--- | Locate the definition of the name at a given position.
+-- | The names in the types at a position.
+typeDefinitionSymbols :: HieAstResult -> Position -> [Name]
+typeDefinitionSymbols har pos = typeNamesAtPoint pos har
+
+-- | The evidence at a position, for the implementations of an overloaded
+-- function.
+implementationSymbols :: HieAstResult -> Position -> [Name]
+implementationSymbols har pos = instanceNamesAtPoint pos har
+
+-- | Locates the definitions, at the versions that their files were indexed.
 gotoDefinition
   :: MonadIO m
   => WithHieDb
   -> LookupModule m
-  -> IdeOptions
   -> M.Map ModuleName NormalizedFilePath
-  -> HieAstResult
-  -> Position
-  -> MaybeT m [(Location, Identifier)]
-gotoDefinition withHieDb getHieFile ideOpts imports srcSpans pos
-  = lift $ locationsAtPoint withHieDb getHieFile ideOpts imports pos srcSpans
+  -> [Identifier]
+  -> m [(Location, Identifier)]
+gotoDefinition = identifiersToLocations
 
--- | Locate the implementation definition of the name at a given position.
--- Goto Implementation for an overloaded function.
-gotoImplementation
-  :: MonadIO m
-  => WithHieDb
-  -> LookupModule m
-  -> IdeOptions
-  -> HieAstResult
-  -> Position
-  -> MaybeT m [Location]
-gotoImplementation withHieDb getHieFile ideOpts srcSpans pos
-  = lift $ instanceLocationsAtPoint withHieDb getHieFile ideOpts pos srcSpans
+gotoTypeDefinition
+  :: MonadIO m => WithHieDb -> LookupModule m -> [Name] -> m [(Location, Identifier)]
+gotoTypeDefinition = namesToLocations
+
+gotoImplementation :: MonadIO m => WithHieDb -> LookupModule m -> [Name] -> m [Location]
+gotoImplementation withHieDb lookupModule =
+  fmap (nubOrd . concat) . mapMaybeM (nameToLocation withHieDb lookupModule)
 
 -- | Synopsis for the name at a given position.
 atPoint
+  :: IdeOptions
+  -> ShakeExtras
+  -> Tracked HieAstResult
+  -> DocAndTyThingMap
+  -> HscEnv
+  -> Position
+  -> Util.EnumSet Extension
+  -> IO (Maybe (Maybe Range, [T.Text]))
+atPoint opts shakeExtras har dkMap env pos enabledExtensions =
+  case rewind hoverAt pos har of
+    Nothing    -> pure Nothing
+    Just asked -> fmap (first (toCurrent =<<)) <$> untrackStale asked
+  where
+    -- The hover converts each position of the file that it shows.
+    hoverAt h p = atPoint' opts shakeExtras h dkMap env p enabledExtensions toCurrent toCurrent
+    -- A value that comes from the AST has the age of the AST.
+    toCurrent :: Remappable x => x -> Maybe x
+    toCurrent x = fastForward (x <$ har)
+
+atPoint'
   :: IdeOptions
   -> ShakeExtras
   -> HieAstResult
@@ -262,23 +274,27 @@ atPoint
   -> HscEnv
   -> Position
   -> Util.EnumSet Extension
+  -> (RealSrcSpan -> Maybe RealSrcSpan)
+  -- ^ converts a span to the current version
+  -> (Location -> Maybe Location)
+  -- ^ converts a location to the current version
   -> IO (Maybe (Maybe Range, [T.Text]))
-atPoint opts@IdeOptions{} shakeExtras@ShakeExtras{ withHieDb, hiedbWriter } har@(HAR _ (hf :: HieASTs a) rf _ (kind :: HieKind hietype)) (DKMap dm km _am) env pos enabledExtensions =
+atPoint' opts@IdeOptions{} ShakeExtras{ withHieDb, hiedbWriter } har@(HAR _ (hf :: HieASTs a) rf _ (kind :: HieKind hietype)) (DKMap dm km _am) env pos enabledExtensions toCurrentSpan toCurrentLocation =
     listToMaybe <$> sequence (pointCommand hf pos hoverInfo)
   where
     -- Hover info for values/data
     hoverInfo :: HieAST hietype -> IO (Maybe Range, [T.Text])
     hoverInfo ast = do
-        locationsWithIdentifier <- runIdeAction "TypeCheck" shakeExtras $ do
-          runMaybeT $ gotoTypeDefinition withHieDb (lookupMod hiedbWriter) opts har pos
+        locationsWithIdentifier <-
+          typeLocationsAtPoint withHieDb (lookupMod hiedbWriter) opts pos har
 
         let locationsMap = M.fromList $ mapMaybe (\(loc, identifier) -> case identifier of
               Right typeName ->
                 -- Filter out type variables (polymorphic names like 'a', 'b', etc.)
                 if isTyVarName typeName
                   then Nothing
-                  else Just (typeName, loc)
-              Left _moduleName -> Nothing) $ fromMaybe [] locationsWithIdentifier
+                  else (typeName,) <$> toCurrentLocation loc
+              Left _moduleName -> Nothing) locationsWithIdentifier
 
         prettyNames <- mapM (prettyName locationsMap) names
         pure (Just range, prettyNames ++ pTypes locationsMap)
@@ -328,9 +344,9 @@ atPoint opts@IdeOptions{} shakeExtras@ShakeExtras{ withHieDb, hiedbWriter } har@
             pure $ T.unlines $ [typeSig] ++ definitionLoc ++ docs
           where
                 pretty Nothing Nothing = Nothing
-                pretty (Just define) Nothing = Just $ define <> "\n"
+                pretty (Just defLoc) Nothing = Just $ defLoc <> "\n"
                 pretty Nothing (Just pkgName) = Just $ pkgName <> "\n"
-                pretty (Just define) (Just pkgName) = Just $ define <> " " <> pkgName <> "\n"
+                pretty (Just defLoc) (Just pkgName) = Just $ defLoc <> " " <> pkgName <> "\n"
         prettyName _locationsMap (Left m,_) = packageNameForImportStatement m
 
         prettyPackageName :: Name -> Maybe T.Text
@@ -434,8 +450,11 @@ atPoint opts@IdeOptions{} shakeExtras@ShakeExtras{ withHieDb, hiedbWriter } har@
         definedAt name =
           -- do not show "at <no location info>" and similar messages
           -- see the code of 'pprNameDefnLoc' for more information
-          case nameSrcLoc name of
-            UnhelpfulLoc {} | isInternalName name || isSystemName name -> Nothing
+          case (nameSrcLoc name, nameSrcSpan name) of
+            (UnhelpfulLoc {}, _) | isInternalName name || isSystemName name -> Nothing
+            (_, RealSrcSpan sp _) -> do
+              sp' <- toCurrentSpan sp
+              Just $ "*Defined " <> printOutputable (text "at" <+> ppr (realSrcSpanStart sp')) <> "*"
             _ -> Just $ "*Defined " <> printOutputable (pprNameDefnLoc name) <> "*"
 
         -- We want to render the root constraint even if it is a let,
@@ -488,9 +507,8 @@ atPoint opts@IdeOptions{} shakeExtras@ShakeExtras{ withHieDb, hiedbWriter } har@
         printDets :: RealSrcSpan -> Maybe (EvVarSource, Scope, Maybe Span) -> SDoc
         printDets _    Nothing = text "using an external instance"
         printDets ospn (Just (src,_,mspn)) = pprSrc
-                                      $$ text "at" <+> text (T.unpack $ srcSpanToMdLink location)
+                                      $$ maybe O.empty (\s -> text "at" <+> text (T.unpack $ srcSpanToMdLink $ realSrcSpanToLocation s)) (toCurrentSpan spn)
           where
-            location = realSrcSpanToLocation spn
             -- Use the bind span if we have one, else use the occurrence span
             spn = fromMaybe ospn mspn
             pprSrc = case src of
@@ -508,7 +526,11 @@ typeLocationsAtPoint
   -> Position
   -> HieAstResult
   -> m [(Location, Identifier)]
-typeLocationsAtPoint withHieDb lookupModule _ideOptions pos (HAR _ ast _ _ hieKind) =
+typeLocationsAtPoint withHieDb lookupModule _ideOptions pos har =
+  namesToLocations withHieDb lookupModule (typeNamesAtPoint pos har)
+
+typeNamesAtPoint :: Position -> HieAstResult -> [Name]
+typeNamesAtPoint pos (HAR _ ast _ _ hieKind) =
   case hieKind of
     HieFromDisk hf ->
       let arr = hie_types hf
@@ -525,12 +547,16 @@ typeLocationsAtPoint withHieDb lookupModule _ideOptions pos (HAR _ ast _ _ hieKi
             HQualTy a b -> getTypes' [a,b]
             HCastTy a -> getTypes' [a]
             _ -> []
-        in fmap nubOrd $ concatMapM (\n -> fmap (maybe [] (fmap (,Right n))) (nameToLocation withHieDb lookupModule n)) (getTypes' ts)
+        in getTypes' ts
     HieFresh ->
       let ts = concat $ pointCommand ast pos getts
           getts x = nodeType ni  ++ mapMaybe identType (M.elems $ nodeIdentifiers ni)
             where ni = nodeInfo x
-        in fmap nubOrd $ concatMapM (\n -> fmap (maybe [] (fmap (,Right n))) (nameToLocation withHieDb lookupModule n)) (getTypes ts)
+        in getTypes ts
+
+namesToLocations :: MonadIO m => WithHieDb -> LookupModule m -> [Name] -> m [(Location, Identifier)]
+namesToLocations withHieDb lookupModule =
+  fmap nubOrd . concatMapM (\n -> fmap (maybe [] (fmap (,Right n))) (nameToLocation withHieDb lookupModule n))
 
 namesInType :: Type -> [Name]
 namesInType (TyVarTy n)      = [varName n]
@@ -560,20 +586,17 @@ namesInHieType (HLitTy _)           = []
 namesInHieType (HCastTy a)          = namesInHieTypeFix a
 namesInHieType HCoercionTy          = []
 
--- | Find 'Location's of definition at a specific point and return them along with their 'Identifier's.
-locationsAtPoint
+-- | Find the 'Location's of the definitions of the identifiers.
+identifiersToLocations
   :: forall m
    . MonadIO m
   => WithHieDb
   -> LookupModule m
-  -> IdeOptions
   -> M.Map ModuleName NormalizedFilePath
-  -> Position
-  -> HieAstResult
+  -> [Identifier]
   -> m [(Location, Identifier)]
-locationsAtPoint withHieDb lookupModule _ideOptions imports pos (HAR _ ast _rm _ _) =
-  let ns = concat $ pointCommand ast pos (M.keys . getNodeIds)
-      zeroPos = Position 0 0
+identifiersToLocations withHieDb lookupModule imports ns =
+  let zeroPos = Position 0 0
       zeroRange = Range zeroPos zeroPos
       modToLocation m = fmap (\fs -> pure (Location (fromNormalizedUri $ filePathToUri' fs) zeroRange)) $ M.lookup m imports
    in fmap (nubOrd . concat) $ mapMaybeM
@@ -581,23 +604,12 @@ locationsAtPoint withHieDb lookupModule _ideOptions imports pos (HAR _ ast _rm _
                 (\n -> fmap (fmap $ fmap (,Right n)) (nameToLocation withHieDb lookupModule n)))
         ns
 
--- | Find 'Location's of a implementation definition at a specific point.
-instanceLocationsAtPoint
-  :: forall m
-   . MonadIO m
-  => WithHieDb
-  -> LookupModule m
-  -> IdeOptions
-  -> Position
-  -> HieAstResult
-  -> m [Location]
-instanceLocationsAtPoint withHieDb lookupModule _ideOptions pos (HAR _ ast _rm _ _) =
+-- | The evidence at a specific point.
+instanceNamesAtPoint :: Position -> HieAstResult -> [Name]
+instanceNamesAtPoint pos (HAR _ ast _rm _ _) =
   let ns = concat $ pointCommand ast pos (M.keys . getNodeIds)
       evTrees = mapMaybe (eitherToMaybe >=> getEvidenceTree _rm) ns
-      evNs = concatMap (map evidenceVar . T.flatten) evTrees
-   in fmap (nubOrd . concat) $ mapMaybeM
-        (nameToLocation withHieDb lookupModule)
-        evNs
+   in concatMap (map evidenceVar . T.flatten) evTrees
 
 -- | Given a 'Name' attempt to find the location where it is defined.
 nameToLocation :: MonadIO m => WithHieDb -> LookupModule m -> Name -> m (Maybe [Location])

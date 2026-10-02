@@ -23,6 +23,7 @@ import           Data.Generics
 import           Data.List.Extra                          as List hiding
                                                                   (stripPrefix)
 import qualified Data.Map                                 as Map
+import qualified GHC.Generics                             as G
 import           Prelude                                  hiding (mod)
 
 import           Data.Maybe                               (fromMaybe, isJust,
@@ -39,7 +40,10 @@ import           Data.Function                            (on)
 import qualified Data.HashSet                             as HashSet
 import           Data.Ord                                 (Down (Down))
 import qualified Data.Set                                 as Set
-import           Development.IDE.Core.PositionMapping
+import           Development.IDE.Core.API                 (Ageless, Tracked,
+                                                           untrack)
+import           Development.IDE.Core.Internal.Tracked    (rewindClamped,
+                                                           untrackStale)
 import           Development.IDE.Core.Text                (lineAt)
 import           Development.IDE.GHC.Compat               hiding (isQual, ppr)
 import qualified Development.IDE.GHC.Compat               as GHC
@@ -97,7 +101,9 @@ data Context = TypeContext
              | ImportListContext String -- ^ import list context with module name
              | ImportHidingContext String -- ^ import hiding context with module name
              | ExportContext -- ^ List of exported identifiers from the current module
-  deriving (Show, Eq)
+  deriving (Show, Eq, G.Generic)
+
+instance Ageless Context
 
 -- | Generates a map of where the context is a type and where the context is a value
 -- i.e. where are the value decls and the type decls
@@ -530,9 +536,9 @@ getCompletions
     :: IdePlugins a
     -> IdeOptions
     -> CachedCompletions
-    -> Maybe (ParsedModule, PositionMapping)
-    -> Maybe (HieAstResult, PositionMapping)
-    -> (Bindings, PositionMapping)
+    -> Maybe (Tracked ParsedModule)
+    -> Maybe (Tracked HieAstResult)
+    -> Maybe (Tracked Bindings)
     -> PosPrefixInfo
     -> ClientCapabilities
     -> CompletionsConfig
@@ -545,7 +551,7 @@ getCompletions
     CC {allModNamesAsNS, anyQualCompls, unqualCompls, qualCompls, importableModules}
     maybe_parsed
     maybe_ast_res
-    (localBindings, bmapping)
+    maybe_bindings
     prefixInfo@(PosPrefixInfo { fullLine, prefixScope, prefixText })
     caps
     config
@@ -610,14 +616,8 @@ getCompletions
             allModNamesAsNS
       -- If we have a parsed module, use it to determine which completion to show.
       maybeContext :: Maybe Context
-      maybeContext = case maybe_parsed of
-            Nothing -> Nothing
-            Just (pm, pmapping) ->
-              let PositionMapping pDelta = pmapping
-                  position' = fromDelta pDelta pos
-                  lpos = lowerRange position'
-                  hpos = upperRange position'
-              in getCContext lpos pm <|> getCContext hpos pm
+      maybeContext = maybe_parsed >>= \pm ->
+        untrack $ rewindClamped (flip getCContext) pos pm
 
       filtCompls :: [Scored (Bool, CompItem)]
       filtCompls = Fuzzy.filter chunkSize maxC prefixText ctxCompls (label . snd)
@@ -628,13 +628,18 @@ getCompletions
           -- Requiring fresh hieast is fine for normal workflows, because it is generated while the user edits.
           recordDotSyntaxCompls :: [(Bool, CompItem)]
           recordDotSyntaxCompls = case maybe_ast_res of
-            Just (HAR {hieAst = hieast, hieKind = HieFresh},_) -> concat $ pointCommand hieast (completionPrefixPos prefixInfo) nodeCompletions
+            Just har -> map (uncurry dotFieldSelectorToCompl) $
+              untrack $ rewindClamped recordDotFields prefixPos har
             _ -> []
             where
-              nodeCompletions :: HieAST Type -> [(Bool, CompItem)]
-              nodeCompletions node = concatMap g (nodeType $ nodeInfo node)
-              g :: Type -> [(Bool, CompItem)]
-              g (TyConApp theTyCon _) = map (dotFieldSelectorToCompl (printOutputable $ GHC.tyConName theTyCon)) $ getSels theTyCon
+              prefixPos = completionPrefixPos prefixInfo
+              recordDotFields :: HieAstResult -> Position -> [(T.Text, T.Text)]
+              recordDotFields HAR {hieAst = hieast, hieKind = HieFresh} p = concat $ pointCommand hieast p nodeFields
+              recordDotFields _ _ = []
+              nodeFields :: HieAST Type -> [(T.Text, T.Text)]
+              nodeFields node = concatMap g (nodeType $ nodeInfo node)
+              g :: Type -> [(T.Text, T.Text)]
+              g (TyConApp theTyCon _) = map (printOutputable $ GHC.tyConName theTyCon,) $ getSels theTyCon
               g _ = []
               getSels :: GHC.TyCon -> [T.Text]
               getSels tycon = let f fieldLabel = printOutputable fieldLabel
@@ -670,11 +675,12 @@ getCompletions
           infixCompls :: Maybe Backtick
           infixCompls = isUsedAsInfix fullLine prefixScope prefixText pos
 
-          PositionMapping bDelta = bmapping
-          oldPos = fromDelta bDelta $ cursorPos prefixInfo
-          startLoc = lowerRange oldPos
-          endLoc = upperRange oldPos
-          localCompls = map (uncurry localBindsToCompItem) $ getFuzzyScope localBindings startLoc endLoc
+          localCompls = case maybe_bindings of
+            Nothing -> []
+            Just localBindings ->
+              -- The completion items keep the spans of the stale bindings.
+              map (uncurry localBindsToCompItem) $ untrackStale $
+                rewindClamped (\bindings p -> getFuzzyScope bindings p p) pos localBindings
           localBindsToCompItem :: Name -> Maybe Type -> CompItem
           localBindsToCompItem name typ = CI ctyp (snippetText pn) thisModName pn ty Nothing (not $ isValOcc occ) Nothing dets True
             where

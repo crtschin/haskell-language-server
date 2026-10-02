@@ -40,6 +40,7 @@ module Development.IDE.GHC.ExactPrint
     )
 where
 
+import qualified Development.IDE.Core.API as API
 import           Control.Applicative                     (Alternative)
 import           Control.Arrow                           ((***))
 import           Control.DeepSeq
@@ -145,6 +146,7 @@ data GetAnnotatedParsedSource = GetAnnotatedParsedSource
 instance Hashable GetAnnotatedParsedSource
 instance NFData GetAnnotatedParsedSource
 type instance RuleResult GetAnnotatedParsedSource = ParsedSource
+instance API.Key GetAnnotatedParsedSource
 
 instance Show (HsModule GhcPs) where
   show _ = "<HsModule GhcPs>"

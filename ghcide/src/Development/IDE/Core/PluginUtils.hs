@@ -5,30 +5,41 @@ module Development.IDE.Core.PluginUtils
 , activeDiagnosticsInRangeMT
 , injectServerDiagnostics
 -- * Formatting handlers
-, mkFormattingHandlers) where
+, mkFormattingHandlers
+-- * Locations
+, toCurrentLocation
+, nameDefinition) where
 
 import           Control.Concurrent.STM
 import           Control.Lens
-import           Control.Monad.Error.Class         (MonadError (throwError))
+import           Control.Monad.Error.Class             (MonadError (throwError))
 import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Maybe
-import qualified Data.Text                         as T
-import qualified Data.Text.Utf16.Rope.Mixed        as Rope
-import           Development.IDE.Core.FileStore
-import           Development.IDE.Core.Service      (runAction)
-import           Development.IDE.Core.Shake        (IdeState (shakeExtras))
-import qualified Development.IDE.Core.Shake        as Shake
-import           Development.IDE.GHC.Orphans       ()
+import qualified Data.Text                             as T
+import qualified Data.Text.Utf16.Rope.Mixed            as Rope
+import           Development.IDE.Core.API              (Query, await, current,
+                                                        lastKnown, optionally,
+                                                        peek, runQuery)
+import           Development.IDE.Core.Internal.Tracked (fastForward)
+import           Development.IDE.Core.RuleTypes        (GetFileContents (..),
+                                                        GetHieAst (..))
+import           Development.IDE.Core.Shake            (IdeState (shakeExtras))
+import qualified Development.IDE.Core.Shake            as Shake
+import           Development.IDE.GHC.Compat            (Name, nameSrcSpan)
+import           Development.IDE.GHC.Error             (srcSpanToLocation)
+import           Development.IDE.GHC.Orphans           ()
 import           Development.IDE.Types.Diagnostics
-import           Development.IDE.Types.Location    (NormalizedFilePath)
+import           Development.IDE.Types.Location        (Location,
+                                                        NormalizedFilePath)
 import           Ide.Plugin.Error
-import           Ide.PluginUtils                   (asPosition, rangesOverlap)
+import           Ide.PluginUtils                       (asPosition,
+                                                        rangesOverlap)
 import           Ide.Types
-import qualified Language.LSP.Protocol.Lens        as LSP
-import           Language.LSP.Protocol.Message     (SMethod (..))
-import           Language.LSP.Protocol.Types       (CodeActionParams)
-import qualified Language.LSP.Protocol.Types       as LSP
-import qualified StmContainers.Map                 as STM
+import qualified Language.LSP.Protocol.Lens            as LSP
+import           Language.LSP.Protocol.Message         (SMethod (..))
+import           Language.LSP.Protocol.Types           (CodeActionParams)
+import qualified Language.LSP.Protocol.Types           as LSP
+import qualified StmContainers.Map                     as STM
 
 -- ----------------------------------------------------------------------------
 -- Diagnostics
@@ -111,7 +122,7 @@ mkFormattingHandlers f = mkPluginHandler SMethod_TextDocumentFormatting ( provid
     provider :: forall m. FormattingMethod m => SMethod m -> PluginMethodHandler IdeState m
     provider m ide _pid params
       | Just nfp <- LSP.uriToNormalizedFilePath $ LSP.toNormalizedUri uri = do
-        contentsMaybe <- liftIO $ runAction "mkFormattingHandlers" ide $ getFileContents nfp
+        contentsMaybe <- snd <$> runQuery ide (await (current GetFileContents nfp))
         case contentsMaybe of
           Just contents -> do
             let (typ, mtoken) = case m of
@@ -125,3 +136,22 @@ mkFormattingHandlers f = mkPluginHandler SMethod_TextDocumentFormatting ( provid
       where
         uri = params ^. LSP.textDocument . LSP.uri
         opts = params ^. LSP.options
+
+-- | Converts a location in the source code to its current position, taking
+-- into account changes that may have occurred due to edits.
+toCurrentLocation :: Location -> Query (Maybe Location)
+toCurrentLocation location = runMaybeT $ do
+    file <- hoistMaybe $ LSP.uriToNormalizedFilePath $ LSP.toNormalizedUri $ location ^. LSP.uri
+    ast <- MaybeT $ peek $ optionally $ lastKnown GetHieAst file
+    -- A location comes from the hie file of its file, so assume that it has
+    -- the age of the last known AST of that file.
+    hoistMaybe $ fastForward (location <$ ast)
+
+-- | Takes a name that 'fastForward' brought out of the file. Its span in that file is
+-- already current, one in another file still needs translating.
+nameDefinition :: NormalizedFilePath -> Name -> Query (Maybe Location)
+nameDefinition file name = runMaybeT $ do
+    location <- hoistMaybe $ srcSpanToLocation $ nameSrcSpan name
+    if LSP.uriToNormalizedFilePath (LSP.toNormalizedUri $ location ^. LSP.uri) == Just file
+      then pure location
+      else MaybeT $ toCurrentLocation location

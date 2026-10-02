@@ -31,6 +31,7 @@ import           Development.IDE                      (IdeState,
                                                        Recorder (..), Rules,
                                                        WithPriority (..),
                                                        realSrcSpanToRange)
+import qualified Development.IDE.Core.API             as API
 import           Development.IDE.Core.RuleTypes       (TcModuleResult (..),
                                                        TypeCheck (..))
 import           Development.IDE.Core.Shake           (define, useWithStale)
@@ -128,6 +129,7 @@ instance Show CollectRecordSelectorsResult where
     show _ = "<CollectRecordsResult>"
 
 type instance RuleResult CollectRecordSelectors = CollectRecordSelectorsResult
+instance API.Key CollectRecordSelectors
 
 -- |Where we store our collected record selectors
 data RecordSelectorExpr = RecordSelectorExpr

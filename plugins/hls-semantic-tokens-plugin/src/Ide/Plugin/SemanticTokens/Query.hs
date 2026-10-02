@@ -2,33 +2,31 @@
 -- The query module is used to query the semantic tokens from the AST
 module Ide.Plugin.SemanticTokens.Query where
 
-import           Control.Applicative                  ((<|>))
-import           Data.Foldable                        (fold)
-import qualified Data.Map.Strict                      as M
-import           Data.Maybe                           (listToMaybe, mapMaybe)
-import qualified Data.Set                             as Set
-import           Data.Text                            (Text)
-import           Development.IDE.Core.PositionMapping (PositionMapping,
-                                                       toCurrentRange)
+import           Control.Applicative                ((<|>))
+import           Data.Foldable                      (fold)
+import qualified Data.Map.Strict                    as M
+import           Data.Maybe                         (listToMaybe, mapMaybe)
+import qualified Data.Set                           as Set
+import           Data.Text                          (Text)
 import           Development.IDE.GHC.Compat
-import           GHC.Iface.Ext.Types                  (ContextInfo, Identifier,
-                                                       IdentifierDetails (..))
-import           GHC.Iface.Ext.Utils                  (RefMap)
+import           GHC.Iface.Ext.Types                (ContextInfo, Identifier,
+                                                     IdentifierDetails (..))
+import           GHC.Iface.Ext.Utils                (RefMap)
 import           Ide.Plugin.SemanticTokens.Mappings
-import           Ide.Plugin.SemanticTokens.Types      (HieFunMaskKind,
-                                                       HsSemanticTokenType (TModule),
-                                                       RangeSemanticTokenTypeList,
-                                                       SemanticTokenId,
-                                                       SemanticTokensConfig)
-import           Language.LSP.Protocol.Types          (Position (Position),
-                                                       Range (Range),
-                                                       SemanticTokenAbsolute (SemanticTokenAbsolute),
-                                                       SemanticTokens (SemanticTokens),
-                                                       SemanticTokensDelta (SemanticTokensDelta),
-                                                       defaultSemanticTokensLegend,
-                                                       makeSemanticTokens,
-                                                       makeSemanticTokensDelta)
-import           Prelude                              hiding (length, span)
+import           Ide.Plugin.SemanticTokens.Types    (HieFunMaskKind,
+                                                     HsSemanticTokenType (TModule),
+                                                     RangeSemanticTokenTypeList,
+                                                     SemanticTokenId,
+                                                     SemanticTokensConfig)
+import           Language.LSP.Protocol.Types        (Position (Position),
+                                                     Range (Range),
+                                                     SemanticTokenAbsolute (SemanticTokenAbsolute),
+                                                     SemanticTokens (SemanticTokens),
+                                                     SemanticTokensDelta (SemanticTokensDelta),
+                                                     defaultSemanticTokensLegend,
+                                                     makeSemanticTokens,
+                                                     makeSemanticTokensDelta)
+import           Prelude                            hiding (length, span)
 
 ---------------------------------------------------------
 
@@ -69,9 +67,9 @@ nameSemanticFromHie hieKind rm n = idSemanticFromRefMap rm (Right n)
 
 -------------------------------------------------
 
-rangeSemanticsSemanticTokens :: SemanticTokenId -> SemanticTokensConfig -> PositionMapping -> RangeSemanticTokenTypeList -> Either Text SemanticTokens
-rangeSemanticsSemanticTokens sid stc mapping =
-  makeSemanticTokensWithId (Just sid) . mapMaybe (\(ran, tk) -> toAbsSemanticToken <$> toCurrentRange mapping ran <*> return tk)
+rangeSemanticsSemanticTokens :: SemanticTokenId -> SemanticTokensConfig -> RangeSemanticTokenTypeList -> Either Text SemanticTokens
+rangeSemanticsSemanticTokens sid stc =
+  makeSemanticTokensWithId (Just sid) . map (uncurry toAbsSemanticToken)
   where
     toAbsSemanticToken :: Range -> HsSemanticTokenType -> SemanticTokenAbsolute
     toAbsSemanticToken (Range (Position startLine startColumn) (Position _endLine endColumn)) tokenType =

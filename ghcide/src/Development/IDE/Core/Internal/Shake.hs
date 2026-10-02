@@ -140,7 +140,8 @@ import           Development.IDE.GHC.Compat             (NameCache,
                                                          initNameCache,
                                                          knownKeyNames)
 #endif
-import           Development.IDE.Core.Internal.Types (IdeRule, MonadPluginFail (..))
+import           Development.IDE.Core.Internal.Types    (IdeRule,
+                                                         MonadPluginFail (..))
 import           Development.IDE.GHC.Orphans            ()
 import           Development.IDE.Graph                  hiding (ShakeValue,
                                                          action)

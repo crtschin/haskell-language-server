@@ -33,7 +33,7 @@ descriptor recorder plId =
             , mkPluginHandler SMethod_TextDocumentCodeLens (Handlers.codeLens recorder)
             ]
         , pluginCommands = [Handlers.evalCommand recorder plId]
-        , pluginRules = rules recorder
+        , pluginRules = rules
         , pluginConfigDescriptor = defaultConfigDescriptor
                                    { configCustomConfig = mkCustomConfig properties
                                    }

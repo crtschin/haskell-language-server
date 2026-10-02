@@ -11,6 +11,7 @@ import qualified Data.HashMap.Strict         as HM
 import           Data.Maybe                  (mapMaybe)
 import qualified Data.Text                   as T
 import           Development.IDE
+import qualified Development.IDE.Core.API    as API
 import           Development.IDE.Core.Rules  (getHieFile)
 import qualified Development.IDE.Core.Shake  as Shake
 import           Development.IDE.GHC.Compat  (HieFile (..))
@@ -102,6 +103,7 @@ instance Hashable GetStanDiagnostics
 instance NFData GetStanDiagnostics
 
 type instance RuleResult GetStanDiagnostics = ()
+instance API.Key GetStanDiagnostics
 
 rules :: Recorder (WithPriority Log) -> PluginId -> Rules ()
 rules recorder plId = do

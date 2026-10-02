@@ -28,17 +28,19 @@ import           Development.IDE                          (Action,
                                                            GetDocMap (GetDocMap),
                                                            GetHieAst (GetHieAst),
                                                            HieAstResult (HAR, hieAst, hieModule, refMap),
-                                                           IdeResult, IdeState,
+                                                           IdeState,
                                                            Priority (..),
                                                            Recorder, Rules,
                                                            WithPriority,
-                                                           cmapWithPrio, define,
                                                            fromNormalizedFilePath,
                                                            hieKind,
                                                            toNormalizedFilePath')
-import           Development.IDE.Core.Compat              (runActionE, useE,
-                                                           useWithStaleE)
-import           Development.IDE.Core.Rules               (toIdeResult)
+import           Development.IDE.Core.API                 (Output, current,
+                                                           fastForwardEach,
+                                                           lastKnown, ok,
+                                                           optionally, output,
+                                                           rule, untrack, use)
+import           Development.IDE.Core.Compat              (runActionE)
 import           Development.IDE.Core.RuleTypes           (DocAndTyThingMap (..))
 import           Development.IDE.Core.Shake               (ShakeExtras (..),
                                                            getShakeExtras,
@@ -49,7 +51,7 @@ import           Development.IDE.GHC.Compat.Util          (mkFastString,
 import           GHC.Iface.Ext.Types                      (HieASTs (getAsts),
                                                            pattern HiePath)
 import           Ide.Logger                               (logWith)
-import           Ide.Plugin.Error                         (PluginError (PluginInternalError),
+import           Ide.Plugin.Error                         (PluginError (PluginInternalError, PluginRuleFailed),
                                                            getNormalizedFilePathE,
                                                            handleMaybe,
                                                            handleMaybeM)
@@ -80,8 +82,11 @@ computeSemanticTokens recorder pid _ nfp = do
   config <- lift $ useSemanticConfigAction pid
   logWith recorder Debug (LogConfig config)
   semanticId <- lift getAndIncreaseSemanticTokensId
-  (RangeHsSemanticTokenTypes {rangeSemanticList}, mapping) <- useWithStaleE GetSemanticTokens nfp
-  withExceptT PluginInternalError $ liftEither $ rangeSemanticsSemanticTokens semanticId config mapping rangeSemanticList
+  tokens <- handleMaybe (PluginRuleFailed "GetSemanticTokens")
+    =<< lift (use (optionally (lastKnown GetSemanticTokens nfp)))
+  -- The tokens that an edit changed drop out.
+  let currentTokens = fastForwardEach (rangeSemanticList <$> tokens)
+  withExceptT PluginInternalError $ liftEither $ rangeSemanticsSemanticTokens semanticId config currentTokens
 
 semanticTokensFull :: Recorder (WithPriority SemanticLog) -> PluginMethodHandler IdeState 'Method_TextDocumentSemanticTokensFull
 semanticTokensFull recorder state pid param = runActionE "SemanticTokens.semanticTokensFull" state computeSemanticTokensFull
@@ -127,9 +132,12 @@ semanticTokensFullDelta recorder state pid param = do
 -- It then combines this information to compute the semantic tokens for the file.
 getSemanticTokensRule :: Recorder (WithPriority SemanticLog) -> Rules ()
 getSemanticTokensRule recorder =
-  define (cmapWithPrio LogShake recorder) $ \GetSemanticTokens nfp -> handleError recorder $ do
-    (HAR {..}) <- withExceptT LogDependencyError $ useE GetHieAst nfp
-    (DKMap {getTyThingMap}, _) <- withExceptT LogDependencyError $ useWithStaleE GetDocMap nfp
+  rule $ \GetSemanticTokens nfp -> handleError recorder $ do
+    (mast, mdocs) <- lift $ use $ (,)
+      <$> optionally (current GetHieAst nfp)
+      <*> optionally (untrack <$> lastKnown GetDocMap nfp)
+    HAR {..} <- handleMaybe (LogDependencyError (PluginRuleFailed "GetHieAst")) mast
+    DKMap {getTyThingMap} <- handleMaybe (LogDependencyError (PluginRuleFailed "GetDocMap")) mdocs
     -- On Windows, 'nfp' contains escaped backslashes \\\\. For files that use
     -- the CPP extension, 'hieAst' contains forward slashes '/', because the C
     -- preprocessor conflicts with backslashes. We need to "renormalize" it,
@@ -144,14 +152,14 @@ getSemanticTokensRule recorder =
 -- taken from /haskell-language-server/plugins/hls-code-range-plugin/src/Ide/Plugin/CodeRange/Rules.hs
 
 -- | Handle error in 'Action'. Returns an 'IdeResult' with no value and no diagnostics on error. (but writes log)
-handleError :: Recorder (WithPriority msg) -> ExceptT msg Action a -> Action (IdeResult a)
+handleError :: Recorder (WithPriority msg) -> ExceptT msg Action a -> Action (Output p a)
 handleError recorder action' = do
   valueEither <- runExceptT action'
   case valueEither of
     Left msg -> do
       logWith recorder Warning msg
-      pure $ toIdeResult (Left [])
-    Right value -> pure $ toIdeResult (Right value)
+      pure $ output Nothing
+    Right value -> pure $ ok value
 
 -----------------------
 -- helper functions

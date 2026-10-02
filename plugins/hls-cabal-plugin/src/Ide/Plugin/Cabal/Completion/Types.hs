@@ -9,10 +9,12 @@ import           Control.Lens                    ((^.))
 import           Data.Hashable
 import qualified Data.Text                       as T
 import           Development.IDE                 as D
+import qualified Development.IDE.Core.API        as API
 import qualified Distribution.Fields             as Syntax
 import qualified Distribution.PackageDescription as PD
 import qualified Distribution.Parsec.Position    as Syntax
 import           GHC.Generics
+import           Ide.Plugin.Cabal.Orphans        ()
 import qualified Language.LSP.Protocol.Lens      as JL
 
 data Log
@@ -41,6 +43,7 @@ instance Pretty Log where
     LogCompletionContext ctx -> "Completion context is:" <+> pretty ctx
 
 type instance RuleResult ParseCabalFile = PD.GenericPackageDescription
+instance API.Key ParseCabalFile
 
 data ParseCabalFile = ParseCabalFile
   deriving (Eq, Show, Generic)
@@ -50,6 +53,7 @@ instance Hashable ParseCabalFile
 instance NFData ParseCabalFile
 
 type instance RuleResult ParseCabalFields = [Syntax.Field Syntax.Position]
+instance API.Key ParseCabalFields
 
 data ParseCabalFields = ParseCabalFields
   deriving (Eq, Show, Generic)
@@ -59,6 +63,7 @@ instance Hashable ParseCabalFields
 instance NFData ParseCabalFields
 
 type instance RuleResult ParseCabalCommonSections = [Syntax.Field Syntax.Position]
+instance API.Key ParseCabalCommonSections
 
 data ParseCabalCommonSections = ParseCabalCommonSections
   deriving (Eq, Show, Generic)

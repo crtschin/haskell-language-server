@@ -7,11 +7,13 @@ import           Control.Monad.Trans.Except
 import           Data.Char                       (isAlpha)
 import qualified Data.Text                       as T
 import           Development.IDE
-import           Development.IDE.Core.Compat     (runActionE, useWithStaleE)
+import           Development.IDE.Core.API        (await, lastKnown, runQuery,
+                                                  untrack)
 import           Development.IDE.GHC.Compat
 import           Development.IDE.GHC.Compat.Util (fsLit)
 import           Development.IDE.Spans.Pragmas   (getNextPragmaInfo,
                                                   insertNewPragma)
+import           GHC.Utils.Outputable            (NamePprCtx)
 import           Ide.Plugin.Error
 import           Ide.PluginUtils
 import           Language.LSP.Protocol.Types
@@ -23,9 +25,8 @@ inRange range s = maybe False (subRange range) (srcSpanToRange s)
 ghostSpan :: RealSrcSpan
 ghostSpan = realSrcLocSpan $ mkRealSrcLoc (fsLit "<haskell-language-sever>") 1 1
 
-showDoc :: HscEnv -> TcGblEnv -> Type -> String
-showDoc hsc gblEnv ty = showSDocForUser' hsc (mkPrintUnqualifiedDefault hsc (rdrEnv gblEnv)) (pprSigmaType ty)
-    where rdrEnv gblEnv = tcg_rdr_env gblEnv
+showDoc :: HscEnv -> NamePprCtx -> Type -> String
+showDoc hsc pprCtx ty = showSDocForUser' hsc pprCtx (pprSigmaType ty)
 
 -- | Paren the name for pretty display if necessary
 toMethodName :: T.Text -> T.Text
@@ -46,12 +47,10 @@ insertPragmaIfNotPresent :: (MonadIO m)
     -> Extension
     -> ExceptT PluginError m [TextEdit]
 insertPragmaIfNotPresent state nfp pragma = do
-    (hscEnv -> hsc_dflags -> sessionDynFlags, _) <- runActionE "classplugin.insertPragmaIfNotPresent.GhcSession" state
-        $ useWithStaleE GhcSession nfp
+    (sessionDynFlags, exts) <- runQuery state $ await $ (,)
+        <$> (untrack . fmap (hsc_dflags . hscEnv) <$> lastKnown GhcSession nfp)
+        <*> (untrack . fmap getExtensions <$> lastKnown GetParsedModuleWithComments nfp)
     fileContents <- liftIO $ runAction "classplugin.insertPragmaIfNotPresent.GetFileContents" state
         $ getFileContents nfp
-    (pm, _) <- runActionE "classplugin.insertPragmaIfNotPresent.GetParsedModuleWithComments" state
-        $ useWithStaleE GetParsedModuleWithComments nfp
-    let exts = getExtensions pm
-        info = getNextPragmaInfo sessionDynFlags fileContents
+    let info = getNextPragmaInfo sessionDynFlags fileContents
     pure [insertNewPragma info pragma | pragma `notElem` exts]
