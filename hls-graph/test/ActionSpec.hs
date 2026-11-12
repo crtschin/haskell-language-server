@@ -80,6 +80,16 @@ spec = do
       res `shouldBe` [True]
       Just (Clean res) <- lookup (newKey theKey) <$> getDatabaseValues theDb
       resultDeps res `shouldBe` ResultDeps [singletonKeySet $ newKey (Rule @())]
+    it "tracks dependencies read in parallel" $ do
+      db@(ShakeDatabase _ _ theDb) <- shakeNewDatabase shakeOptions $ do
+        ruleUnit
+        ruleBool
+        ruleParallel
+      let theKey = Rule @Int
+      _ <- shakeRunDatabase db $ pure $ apply1 theKey
+      Just (Clean res) <- lookup (newKey theKey) <$> getDatabaseValues theDb
+      getResultDepsDefault mempty (resultDeps res)
+        `shouldBe` fromListKeySet [newKey (Rule @()), newKey (Rule @Bool)]
     it "tracks reverse dependencies" $ do
       db@(ShakeDatabase _ _ Database {..}) <- shakeNewDatabase shakeOptions $ do
         ruleUnit

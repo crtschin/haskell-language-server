@@ -36,6 +36,12 @@ ruleBool = addRule $ \Rule _old _mode -> do
     () <- apply1 Rule
     return $ RunResult ChangedRecomputeDiff "" True (return ())
 
+-- | Depends on Rule @() and Rule @Bool, read in parallel
+ruleParallel :: Rules ()
+ruleParallel = addRule $ \(Rule :: Rule Int) _old _mode -> do
+    _ <- parallel [apply1 (Rule @()), () <$ apply1 (Rule @Bool)]
+    return $ RunResult ChangedRecomputeDiff "" 0 (return ())
+
 
 data CondRule = CondRule
     deriving (Eq, Generic, Hashable, NFData, Show)

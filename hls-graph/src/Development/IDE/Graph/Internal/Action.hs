@@ -45,15 +45,9 @@ parallel [] = pure []
 parallel [x] = fmap (:[]) x
 parallel xs = do
     a <- Action ask
-    deps <- liftIO $ readIORef $ actionDeps a
-    case deps of
-        UnknownDeps ->
-            -- if we are already in the rerun mode, nothing we do is going to impact our state
-            liftIO $ mapConcurrently (ignoreState a) xs
-        deps -> do
-            (newDeps, res) <- liftIO $ unzip <$> mapConcurrently (usingState a) xs
-            liftIO $ writeIORef (actionDeps a) $ mconcat $ deps : newDeps
-            pure res
+    (newDeps, res) <- liftIO $ unzip <$> mapConcurrently (usingState a) xs
+    liftIO $ modifyIORef' (actionDeps a) (mconcat newDeps <>)
+    pure res
     where
         usingState a x = do
             ref <- newIORef mempty
