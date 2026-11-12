@@ -26,7 +26,8 @@ import           Language.LSP.Protocol.Types    hiding
                                                  SemanticTokensEdit (..),
                                                  mkRange)
 import           Language.LSP.Test
-import           Test.Hls                       (waitForTypecheck)
+import           Test.Hls                       (waitForAction,
+                                                 waitForTypecheck)
 import qualified Test.Hls.FileSystem            as FS
 import           Test.Hls.FileSystem            (file, text)
 import           Test.Hls.Util
@@ -535,7 +536,8 @@ projectCompletionTests =
             , "after = C."
             , "stale = CM."
             ]]
-        void $ waitForTypecheck doc
+        -- Completions keep the old imports until the new ones load.
+        void $ waitForAction "nonlocalcompletions" doc
         after <- getCompletions doc (Position 2 10)
         stale <- getCompletions doc (Position 3 11)
 

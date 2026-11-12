@@ -11,50 +11,53 @@ module Development.IDE.Plugin.Test
   , blockCommandId
   ) where
 
-import           Control.Concurrent                   (threadDelay)
-import qualified Control.Exception                    as E
+import           Control.Concurrent                       (threadDelay)
+import qualified Control.Exception                        as E
 import           Control.Monad
-import           Control.Monad.Except                 (ExceptT (..), throwError)
+import           Control.Monad.Except                     (ExceptT (..),
+                                                           throwError)
 import           Control.Monad.IO.Class
 import           Control.Monad.STM
-import           Control.Monad.Trans.Class            (MonadTrans (lift))
-import           Data.Aeson                           (FromJSON (parseJSON),
-                                                       ToJSON (toJSON), Value)
-import qualified Data.Aeson.Types                     as A
+import           Control.Monad.Trans.Class                (MonadTrans (lift))
+import           Data.Aeson                               (FromJSON (parseJSON),
+                                                           ToJSON (toJSON),
+                                                           Value)
+import qualified Data.Aeson.Types                         as A
 import           Data.Bifunctor
-import           Data.CaseInsensitive                 (CI, original)
-import qualified Data.HashMap.Strict                  as HM
-import qualified Data.HashSet                         as Set
-import           Data.Maybe                           (isJust)
+import           Data.CaseInsensitive                     (CI, original)
+import qualified Data.HashMap.Strict                      as HM
+import qualified Data.HashSet                             as Set
+import           Data.Maybe                               (isJust)
 import           Data.Proxy
 import           Data.String
-import           Data.Text                            (Text, pack)
-import           Development.IDE.Core.OfInterest      (getFilesOfInterest)
+import           Data.Text                                (Text, pack)
+import           Development.IDE.Core.OfInterest          (getFilesOfInterest)
 import           Development.IDE.Core.Rules
 import           Development.IDE.Core.RuleTypes
 import           Development.IDE.Core.Shake
 import           Development.IDE.GHC.Compat
-import           Development.IDE.Graph                (Action)
-import qualified Development.IDE.Graph                as Graph
-import           Development.IDE.Graph.Database       (ShakeDatabase,
-                                                       shakeGetBuildEdges,
-                                                       shakeGetBuildStep,
-                                                       shakeGetCleanKeys)
-import           Development.IDE.Graph.Internal.Types (Result (resultBuilt, resultChanged, resultVisited),
-                                                       Step (Step))
-import qualified Development.IDE.Graph.Internal.Types as Graph
-import           Development.IDE.Session              (clearSessionLoaderPendingBarrier,
-                                                       setSessionLoaderPendingBarrier)
+import           Development.IDE.Graph                    (Action)
+import qualified Development.IDE.Graph                    as Graph
+import           Development.IDE.Graph.Database           (ShakeDatabase,
+                                                           shakeGetBuildEdges,
+                                                           shakeGetBuildStep,
+                                                           shakeGetCleanKeys)
+import           Development.IDE.Graph.Internal.Types     (Result (resultBuilt, resultChanged, resultVisited),
+                                                           Step (Step))
+import qualified Development.IDE.Graph.Internal.Types     as Graph
+import           Development.IDE.Plugin.Completions.Types (NonLocalCompletions (..))
+import           Development.IDE.Session                  (clearSessionLoaderPendingBarrier,
+                                                           setSessionLoaderPendingBarrier)
 import           Development.IDE.Types.Action
-import           Development.IDE.Types.HscEnvEq       (HscEnvEq (hscEnv))
-import           Development.IDE.Types.Location       (fromUri)
-import           GHC.Generics                         (Generic)
+import           Development.IDE.Types.HscEnvEq           (HscEnvEq (hscEnv))
+import           Development.IDE.Types.Location           (fromUri)
+import           GHC.Generics                             (Generic)
 import           Ide.Plugin.Error
 import           Ide.Types
 import           Language.LSP.Protocol.Message
 import           Language.LSP.Protocol.Types
 import qualified "list-t" ListT
-import qualified StmContainers.Map                    as STM
+import qualified StmContainers.Map                        as STM
 import           System.Time.Extra
 
 type Age = Int
@@ -173,6 +176,7 @@ parseAction "ghcsession" fp = Right . isJust <$> use GhcSession fp
 parseAction "ghcsessiondeps" fp = Right . isJust <$> use GhcSessionDeps fp
 parseAction "gethieast" fp = Right . isJust <$> use GetHieAst fp
 parseAction "getFileContents" fp = Right . isJust <$> use GetFileContents fp
+parseAction "nonlocalcompletions" fp = Right . isJust <$> use NonLocalCompletions fp
 parseAction other _ = return $ Left $ "Cannot parse ide rule: " <> pack (original other)
 
 parseActions :: CI String -> [NormalizedFilePath] -> Action (Either Text [Bool])
