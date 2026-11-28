@@ -7,7 +7,7 @@ import           Control.Lens               (set, (^.))
 import           Control.Monad.Extra
 import qualified Data.Aeson                 as Aeson
 import           Data.Functor               ((<&>))
-import           Data.List                  (sort, tails)
+import           Data.List                  (sort)
 import qualified Data.Map                   as M
 import qualified Data.Text                  as T
 import           Development.IDE.Test
@@ -537,18 +537,6 @@ mkIncomingCallsParam = CallHierarchyIncomingCallsParams Nothing Nothing
 
 mkOutgoingCallsParam :: CallHierarchyItem -> CallHierarchyOutgoingCallsParams
 mkOutgoingCallsParam = CallHierarchyOutgoingCallsParams Nothing Nothing
-
--- Wait for a special test message emitted by ghcide when a file is indexed,
--- so that call hierarchy can safely query the database.
-waitForIndex :: FilePath -> Session ()
-waitForIndex fp1 = skipManyTill anyMessage $ void $ referenceReady lenientEquals
-  where
-    -- fp1 may be relative, in that case we check that it is a suffix of the
-    -- filepath from the message
-    lenientEquals :: FilePath -> Bool
-    lenientEquals fp2
-      | isRelative fp1 = any (equalFilePath fp1 . joinPath) $ tails $ splitDirectories fp2
-      | otherwise = equalFilePath fp1 fp2
 
 runCallHierarchySession :: Session a -> IO a
 runCallHierarchySession =

@@ -2,23 +2,30 @@ module Main (main) where
 
 import           Control.Lens               ((^.))
 import           Data.Char                  (isSpace)
-import           Data.Either                (rights)
+import           Data.Either                (isLeft, rights)
 import           Data.Foldable              (find)
 import           Data.List                  (sort)
-import           Data.Maybe                 (fromMaybe)
+import           Data.Maybe                 (fromMaybe, isNothing)
 import qualified Data.Text                  as T
+import           Development.IDE.Test       (waitForIndex)
 import qualified Ide.Plugin.Export          as Export
+import           Ide.Types                  (Config (componentsLoading),
+                                             SessionLoadingPreferenceConfig (..))
 import qualified Language.LSP.Protocol.Lens as L
 import           System.FilePath            ((</>))
 import           Test.Hls
-import           Test.Hls.FileSystem        (copy, directProject,
-                                             mkVirtualFileTree)
+import           Test.Hls.FileSystem        (FileTree, copy, copyDir,
+                                             directCradle, directProject, file,
+                                             mkVirtualFileTree, text)
 
 plugin :: PluginTestDescriptor Export.Log
 plugin = mkPluginTestDescriptor Export.descriptor "export"
 
+testDir :: FilePath
+testDir = "plugins" </> "hls-export-plugin" </> "test"
+
 testDataDir :: FilePath
-testDataDir = "plugins" </> "hls-export-plugin" </> "test" </> "testdata"
+testDataDir = testDir </> "testdata"
 
 -- | Open the named module in its own temporary single-file project, so each
 -- test compiles only the file it needs and cannot pick up signals from a
@@ -189,6 +196,42 @@ checkCase act name file l c check = testCase name $ runExport file $ \doc -> do
 exportCase :: TestName -> FilePath -> UInt -> UInt -> (T.Text -> Assertion) -> TestTree
 exportCase = checkCase exportAndCheck
 
+runProjectWith :: SessionLoadingPreferenceConfig -> [FileTree] -> Session a -> IO a
+runProjectWith loading tree act =
+    runSessionWithTestConfig def
+        { testDirLocation      = Right (mkVirtualFileTree testDir tree)
+        , testPluginDescriptor = plugin
+        , testConfigCaps       = codeActionResolveCaps
+        , testLspConfig        = def { componentsLoading = loading }
+        } (const act)
+
+exposedProject :: [FileTree]
+exposedProject = [copyDir "testdata-exposed"]
+
+runExposed :: Session a -> IO a
+runExposed = runProjectWith PreferMultiWholeProjectLoading exposedProject
+
+assertNoneInfix :: T.Text -> [T.Text] -> Assertion
+assertNoneInfix hay needles =
+    not (any (`T.isInfixOf` hay) needles)
+        @? ("Expected none of " <> show needles <> " in:\n" <> T.unpack hay)
+
+removeUnused :: T.Text
+removeUnused = "Remove unused exports"
+
+-- | A disabled action counts as not offered.
+notOffered :: TextDocumentIdentifier -> Range -> Session ()
+notOffered doc range = do
+    actions <- rights . map toEither <$> getCodeActions doc range
+    let enabled = [ca ^. L.title | ca <- actions, isNothing (ca ^. L.disabled)]
+    liftIO $ removeUnused `notElem` enabled
+        @? (T.unpack removeUnused <> ": expected not offered, saw enabled: " <> show enabled)
+
+disabledBecause :: T.Text -> TextDocumentIdentifier -> Range -> Session ()
+disabledBecause reason doc range = do
+    ca <- findAction (== removeUnused) doc range
+    liftIO $ ca ^. L.disabled @?= Just (CodeActionDisabled reason)
+
 findAction :: (T.Text -> Bool) -> TextDocumentIdentifier -> Range -> Session CodeAction
 findAction matches doc range = do
     actions <- rights . map toEither <$> getCodeActions doc range
@@ -196,6 +239,26 @@ findAction matches doc range = do
         Just ca -> pure ca
         Nothing -> liftIO $ assertFailure $
             "no matching code action, saw: " <> show (map (^. L.title) actions)
+
+trimCase :: TestName -> FilePath -> Range -> [T.Text] -> [T.Text] -> TestTree
+trimCase name target header present absent =
+    testCase name $ runExposed $ do
+        _       <- openDoc "Users.hs" "haskell"
+        target' <- openDoc target "haskell"
+        waitForIndex "Users.hs"
+        ca <- findAction (== removeUnused) target' header
+        resolveCodeAction ca >>= executeCodeAction
+        region <- fst . T.breakOn "where" <$> documentContents target'
+        liftIO $ do
+            assertContainsAll region present
+            assertNoneInfix region absent
+
+notOfferedCase :: TestName -> FilePath -> Range -> TestTree
+notOfferedCase name target range =
+    testCase name $ runExposed $ do
+        target' <- openDoc target "haskell"
+        waitForKickDone
+        notOffered target' range
 
 main :: IO ()
 main = defaultTestRunner $ testGroup "Export"
@@ -380,5 +443,87 @@ main = defaultTestRunner $ testGroup "Export"
                     assertFlaggedBlockKept "extra" txt
         , noExportAllCase "not offered when every symbol is exported" "RemoveCtorOp.hs" 2 7
         , noExportAllCase "not offered off the module header" "Basic.hs" 7 0  -- on `bar`
+        ]
+    , testGroup "Remove unused exports"
+        [ testGroup "trims to the names that other modules use"
+            [ trimCase "implicit module: generates a list of the externally-used names after a warning pragma"
+                "TrimImplicit.hs" (rangeAt 0 7)
+                [ "{-# DEPRECATED \"old\" #-} ("
+                , "type (:+:) (..), T (..), U (..), pattern Used, usedValue"
+                ]
+                ["unusedValue", "usedOnlyInternally", "helper"]
+            , trimCase "explicit CPP module: trims the list and keeps what importers need"
+                "TrimExports.hs" (rangeAt 1 7)
+                [ "( -- * Core\n    used\n  , T (MkA, MkB)\n  , Q (QA)\n"
+                , "Wrap (Wrap), N (N), D (MkD)"
+                , "pattern Clash"
+                , "originUsed", "ReexportOrigin.qualUsed", "fieldUsed"
+                ]
+                ["unused", "UnusedT", "MkUnusedT", "(..)", "QB", "QC", "originUnused", "localUnused", ", Clash", "(Clash"]
+            , testCase "single-component package" $
+                runProjectWith PreferMultiWholeProjectLoading
+                    [ file "hie.yaml" $ text "cradle:\n  cabal:\n"
+                    , file "single.cabal" $ text $ T.unlines
+                        [ "cabal-version: 2.4"
+                        , "name: single"
+                        , "version: 0.1"
+                        , "library"
+                        , "  exposed-modules: Lib"
+                        , "  other-modules: Internal"
+                        , "  build-depends: base"
+                        , "  default-language: Haskell2010"
+                        ]
+                    , file "Lib.hs" $ text "module Lib (lib) where\nimport Internal\nlib :: Int\nlib = used\n"
+                    , file "Internal.hs" $ text "module Internal (used, unused) where\nused, unused :: Int\nused = 1\nunused = 2\n"
+                    ] $ do
+                _      <- openDoc "Lib.hs" "haskell"
+                target <- openDoc "Internal.hs" "haskell"
+                waitForIndex "Lib.hs"
+                ca <- findAction (== removeUnused) target (rangeAt 0 7)
+                resolveCodeAction ca >>= executeCodeAction
+                txt <- documentContents target
+                liftIO $ assertContainsAll txt ["module Internal (used) where"]
+            ]
+        , testGroup "offered only where a safe rewrite exists"
+            [ notOfferedCase "not offered when the list holds a `module M` re-export"
+                "WholeReexport.hs" (rangeAt 0 7)
+            , notOfferedCase "no action when cursor is off the module header"
+                "TrimImplicit.hs" (rangeAt 2 0)
+            , notOfferedCase "not offered on a library-exposed module that another component hides"
+                ("shared" </> "SharedApi.hs") (rangeAt 0 7)
+            , notOfferedCase "not offered on the main module of an executable"
+                ("dummy" </> "Dummy.hs") (rangeAt 0 7)
+            , notOfferedCase "not offered when a directive sits inside the export list"
+                "CppExportDirective.hs" (rangeAt 1 7)
+            , notOfferedCase "not offered when the export list sits under a directive"
+                "CppHeaderOnly.hs" (rangeAt 1 7)
+            , testCase "refused when an importing module uses CPP" $ runExposed $ do
+                _      <- openDoc "CppImporter.hs" "haskell"
+                target <- openDoc "CppImported.hs" "haskell"
+                waitForIndex "CppImporter.hs"
+                ca  <- findAction (== removeUnused) target (rangeAt 0 7)
+                rsp <- request SMethod_CodeActionResolve ca
+                liftIO $ isLeft (rsp ^. L.result) @? "expected the resolve to fail"
+            , testCase "not offered when no cabal file can be found" $
+                runProjectWith PreferMultiWholeProjectLoading
+                    [ directCradle ["NoCabal"]
+                    , file "NoCabal.hs" $ text $ T.unlines
+                        [ "module NoCabal where"
+                        , ""
+                        , "noCabalValue :: Int"
+                        , "noCabalValue = 1"
+                        ]
+                    ] $ do
+                target <- openDoc "NoCabal.hs" "haskell"
+                waitForKickDone
+                notOffered target (rangeAt 0 7)
+            , -- See Note [All importing modules must be visible].
+              testCase "not offered when components load on demand" $
+                runProjectWith PreferMultiComponentLoading exposedProject $ do
+                    target <- openDoc "TrimExports.hs" "haskell"
+                    waitForKickDone
+                    disabledBecause "componentsLoading is not set to whole-project loading"
+                        target (rangeAt 1 7)
+            ]
         ]
     ]

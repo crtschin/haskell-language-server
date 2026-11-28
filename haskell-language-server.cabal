@@ -2024,6 +2024,7 @@ test-suite hls-export-plugin-tests
   build-depends:
     , filepath
     , haskell-language-server:hls-export-plugin
+    , hls-plugin-api  == 2.15.0.0
     , hls-test-utils == 2.15.0.0
     , lens
     , lsp-types

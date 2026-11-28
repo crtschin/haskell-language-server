@@ -1,0 +1,36 @@
+cabal-version:      2.4
+name:               export-fixture
+version:            0.1.0.0
+
+library
+    exposed-modules:  SharedApi
+    other-modules:    Users
+                      TrimExports
+                      TrimImplicit
+                      ReexportOrigin
+                      WholeReexport
+                      CppExportDirective
+                      CppHeaderOnly
+                      CppImported
+                      CppImporter
+    hs-source-dirs:   . shared
+    build-depends:    base
+    default-language: Haskell2010
+    default-extensions: TypeOperators
+                        PatternSynonyms
+                        ExplicitNamespaces
+
+executable dummy
+    main-is:          Dummy.hs
+    hs-source-dirs:   dummy
+    build-depends:    base
+    default-language: Haskell2010
+
+-- Lists the library's exposed SharedApi in other-modules without depending on
+-- the library.
+executable shared-exe
+    main-is:          Main.hs
+    other-modules:    SharedApi
+    hs-source-dirs:   shared-exe shared
+    build-depends:    base
+    default-language: Haskell2010
