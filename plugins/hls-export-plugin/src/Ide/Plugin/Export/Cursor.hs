@@ -2,6 +2,7 @@ module Ide.Plugin.Export.Cursor
   ( ExportFlavor (..)
   , UnderCursor (..)
   , locateUnderCursor
+  , moduleEntities
   ) where
 
 import           Control.Applicative        ((<|>))
@@ -54,7 +55,17 @@ declEntities = \case
   TyClD _ ClassDecl {tcdLName = lname}       -> [(ExportAll, lname)]
   TyClD _ SynDecl {tcdLName = lname}         -> [(ExportName, lname)]
   TyClD _ FamDecl {tcdFam = fam}             -> [(ExportAbs, fdLName fam)]
+  ForD _ ForeignImport {fd_name = lname}     -> [(ExportName, lname)]
   _                                          -> []
+
+-- | Every top-level entity in the module.
+moduleEntities :: ParsedSource -> [(ExportFlavor, RdrName)]
+moduleEntities ps =
+  [ (flavor, unLoc n) | decl <- decls, (flavor, n) <- declEntities decl ]
+    -- The binders of a pattern binding are not declarations, so 'declEntities' skips them.
+    ++ [ (ExportName, v) | ValD _ PatBind {pat_lhs = lhs} <- decls, v <- collectPatBinders CollNoDictBinders lhs ]
+  where
+    decls = map unLoc (hsmodDecls (unLoc ps))
 
 classifyDecl :: Position -> HsDecl GhcPs -> Maybe UnderCursor
 classifyDecl pos decl =
