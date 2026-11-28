@@ -7,15 +7,15 @@ import           Data.Foldable              (find)
 import           Data.List                  (sort)
 import           Data.Maybe                 (fromMaybe)
 import qualified Data.Text                  as T
-import           Ide.Plugin.Export          (descriptor)
+import qualified Ide.Plugin.Export          as Export
 import qualified Language.LSP.Protocol.Lens as L
 import           System.FilePath            ((</>))
 import           Test.Hls
 import           Test.Hls.FileSystem        (copy, directProject,
                                              mkVirtualFileTree)
 
-plugin :: PluginTestDescriptor ()
-plugin = mkPluginTestDescriptor' descriptor "export"
+plugin :: PluginTestDescriptor Export.Log
+plugin = mkPluginTestDescriptor Export.descriptor "export"
 
 testDataDir :: FilePath
 testDataDir = "plugins" </> "hls-export-plugin" </> "test" </> "testdata"

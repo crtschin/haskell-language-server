@@ -6,6 +6,7 @@ The export plugin provides code actions for working with a module's export list.
 - Unexport `...`: on exported top-level declaration symbols.
 - Export all symbols: on the module header, exports every top-level symbol
   that is not exported yet. A module without an export list gets one.
+- Remove unused exports: trims the export list to external usages.
 
 Export and Unexport are only offered when the module has an explicit export list.
 
@@ -16,3 +17,12 @@ Not yet supported:
 - Type and data families (standalone or associated)
 - Pattern synonyms (`pattern P :: ...`)
 - Module re-exports (`module M`)
+
+Remove unused exports is only offered when:
+- `haskell.componentsLoading` is `multi: whole-project`.
+- No public library lists the module in `exposed-modules`.
+- The module is not the main module of an executable.
+- The export list does not contain `module M` re-exports or CPP directives.
+- No module that imports the module uses CPP.
+
+When one of these does not hold, editors that support disabled code actions show the action greyed out with the reason.

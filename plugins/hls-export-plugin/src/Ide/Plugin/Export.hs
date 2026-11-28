@@ -1,4 +1,4 @@
-module Ide.Plugin.Export (descriptor) where
+module Ide.Plugin.Export (descriptor, Log) where
 
 import           Control.Concurrent.STM           (atomically)
 import           Control.Lens
@@ -14,17 +14,25 @@ import           Development.IDE.GHC.Compat.Error (_TcRnUnusedTopBind,
 import           Ide.Plugin.Error                 (getNormalizedFilePathE)
 import           Ide.Plugin.Export.Cursor
 import           Ide.Plugin.Export.Exports
+import           Ide.Plugin.Export.RemoveUnused
 import           Ide.Plugin.Export.Utils
+import           Ide.Plugin.Resolve               (mkCodeActionWithResolveAndCommand)
 import           Ide.Types
 import qualified Ide.Types                        as Ide
 import qualified Language.LSP.Protocol.Lens       as L
 import           Language.LSP.Protocol.Message    (Method (..), SMethod (..))
 import           Language.LSP.Protocol.Types
 
-descriptor :: PluginId -> PluginDescriptor IdeState
-descriptor plId = (defaultPluginDescriptor plId "Code actions for module export lists")
-  { Ide.pluginHandlers = mkPluginHandler SMethod_TextDocumentCodeAction codeActionProvider
-  }
+descriptor :: Recorder (WithPriority Log) -> PluginId -> PluginDescriptor IdeState
+descriptor recorder plId =
+  let -- The edit is slow to compute, so compute it on resolve.
+      (removeUnusedCommands, removeUnusedHandlers) =
+        mkCodeActionWithResolveAndCommand (cmapWithPrio LogResolve recorder) plId
+          (removeUnusedProvider recorder) removeUnusedResolveProvider
+  in (defaultPluginDescriptor plId "Code actions for module export lists")
+    { Ide.pluginHandlers = mkPluginHandler SMethod_TextDocumentCodeAction codeActionProvider <> removeUnusedHandlers
+    , Ide.pluginCommands = removeUnusedCommands
+    }
 
 codeActionProvider :: PluginMethodHandler IdeState Method_TextDocumentCodeAction
 codeActionProvider state _plId (CodeActionParams _ _ doc range _) = do

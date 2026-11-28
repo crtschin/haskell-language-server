@@ -4,6 +4,7 @@
 module Ide.Plugin.Export.ExactPrint
   ( LExportList
   , renderExport
+  , renderTypeWith
   , parseIE
   , appendIE
   , removeMatchingIE
@@ -93,25 +94,24 @@ separatorComma :: [LIE GhcPs] -> Maybe TrailingAnn
 separatorComma items =
   listToMaybe [c | L ann _ <- items, c <- trailingAnns ann, isCommaAnn c]
 
--- | Drop the first element matching @p@. A removed head hands its entry delta
--- to the next element so the list keeps its start, and the new last element
--- loses its separator comma.
--- - @Nothing@ if nothing matches
--- - @Just []@ if the sole element was removed.
-removeListItem
+-- | Drop every element matching @p@. A removed head hands its entry delta to
+-- the next element so the list keeps its start, and the new last element loses
+-- its separator comma. 'Nothing' if nothing matches.
+removeListItems
   :: (LocatedAn AnnListItem a -> Bool)
   -> [LocatedAn AnnListItem a]
   -> Maybe [LocatedAn AnnListItem a]
-removeListItem p items = case break p items of
-  (_, [])               -> Nothing
-  (pre, removed : post) ->
-    let survivors = case (pre, post) of
-          ([], next : rest) -> setEntryDP next (getEntryDP removed) : rest
-          _                 -> pre ++ post
-     in Just (over _last (first removeTrailingCommaAnn) survivors)
+removeListItems p items = case items of
+  _ | not (any p items) -> Nothing
+  removed : _ | p removed, next : rest <- survivors ->
+    Just (dropLastComma (setEntryDP next (getEntryDP removed) : rest))
+  _ -> Just (dropLastComma survivors)
+  where
+    survivors = filter (not . p) items
+    dropLastComma = over _last (first removeTrailingCommaAnn)
 
 removeMatchingIE :: (IE GhcPs -> Bool) -> LExportList -> Maybe LExportList
-removeMatchingIE p (L l items) = L l <$> removeListItem (p . unLoc) items
+removeMatchingIE p (L l items) = L l <$> removeListItems (p . unLoc) items
 
 -- | 'Nothing' iff @ctor@ is already exported (via @T(..)@ or @T(...,ctor,...)@).
 addCtorUnderParent ::
@@ -164,7 +164,7 @@ removeCtorUnderParent dflags parent ctor (L l items) = do
     dropCtor changed item@(L itemLoc ie)
       | parentNameIs parentFS ie
       , Just (thing, children, setChildren) <- ieThingWith ie
-      , Just kept <- removeListItem isCtor children
+      , Just kept <- removeListItems isCtor children
       = (,) True . L itemLoc <$>
           if null kept
             then unLoc <$> parseIE dflags (renderExport ExportAbs (ieWrappedName (unLoc thing)))

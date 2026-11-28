@@ -1969,13 +1969,13 @@ flag export
   manual:      True
 
 common export
-  if flag(export)
+  if flag(export) && flag(cabal)
     build-depends: haskell-language-server:hls-export-plugin
     cpp-options: -Dhls_export
 
 library hls-export-plugin
   import: defaults, pedantic, warnings
-  if !flag(export)
+  if !flag(export) || !flag(cabal)
     buildable: False
   exposed-modules:
     Ide.Plugin.Export
@@ -1983,16 +1983,22 @@ library hls-export-plugin
     Ide.Plugin.Export.Cursor
     Ide.Plugin.Export.ExactPrint
     Ide.Plugin.Export.Exports
+    Ide.Plugin.Export.RemoveUnused
     Ide.Plugin.Export.Utils
   hs-source-dirs:     plugins/hls-export-plugin/src
   default-language:   GHC2021
   build-depends:
+    , aeson
+    , bytestring
+    , Cabal-syntax          >= 3.7
     , containers
     , ghc
     , ghc-boot-th
     , ghc-exactprint
     , ghcide          == 2.15.0.0
+    , haskell-language-server:hls-cabal-plugin
     , haskell-language-server:hls-exactprint-utils
+    , hiedb           ^>= 0.8.0.0
     , hls-plugin-api  == 2.15.0.0
     , lens
     , lsp >=2.8
@@ -2010,7 +2016,7 @@ library hls-export-plugin
 
 test-suite hls-export-plugin-tests
   import:           defaults, pedantic, test-defaults, warnings
-  if !flag(export)
+  if !flag(export) || !flag(cabal)
     buildable: False
   type:             exitcode-stdio-1.0
   hs-source-dirs:   plugins/hls-export-plugin/test

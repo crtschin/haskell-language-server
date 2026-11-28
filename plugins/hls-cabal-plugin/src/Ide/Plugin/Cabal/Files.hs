@@ -21,25 +21,29 @@ import           System.FilePath
   If cabal file wasn't found, returns Nothing.
 -}
 findResponsibleCabalFile :: FilePath -> IO (Maybe FilePath)
-findResponsibleCabalFile haskellFilePath = do
+findResponsibleCabalFile haskellFilePath =
+  findClosestCabalFile haskellFilePath >>= maybe (pure Nothing) skipIfHpack
+ where
+  skipIfHpack cabalFile = do
+    exists <- doesFileExist $ takeDirectory cabalFile </> "package.yaml"
+    if exists then pure Nothing else pure $ Just cabalFile
+
+-- | Like 'findResponsibleCabalFile', but also returns a cabal file that hpack
+-- generated.
+findClosestCabalFile :: FilePath -> IO (Maybe FilePath)
+findClosestCabalFile haskellFilePath = do
   let dirPath = dropFileName haskellFilePath
       allDirPaths = reverse $ scanl1 (</>) (splitPath dirPath) -- sorted from most to least specific
   go allDirPaths
  where
-  go [] = pure Nothing
-  go (path : ps) = do
-    objects <- listDirectory path
-    let objectsWithPaths = map (\obj -> path <> obj) objects
-        objectsCabalExtension = filter (\c -> takeExtension c == ".cabal") objectsWithPaths
-    cabalFiles <- filterM (\c -> doesFileExist c) objectsCabalExtension
-    case safeHead cabalFiles of
-      Nothing -> go ps
-      Just cabalFile -> guardAgainstHpack path cabalFile
-       where
-        guardAgainstHpack :: FilePath -> FilePath -> IO (Maybe FilePath)
-        guardAgainstHpack path cabalFile = do
-          exists <- doesFileExist $ path </> "package.yaml"
-          if exists then pure Nothing else pure $ Just cabalFile
+  go []          = pure Nothing
+  go (path : ps) = findCabalFileIn path >>= maybe (go ps) (pure . Just)
+
+findCabalFileIn :: FilePath -> IO (Maybe FilePath)
+findCabalFileIn dir = do
+  objects <- listDirectory dir
+  let objectsCabalExtension = filter (\c -> takeExtension c == ".cabal") (map (dir </>) objects)
+  safeHead <$> filterM doesFileExist objectsCabalExtension
 
 {- | Gives a cabal file's contents or throws error.
 

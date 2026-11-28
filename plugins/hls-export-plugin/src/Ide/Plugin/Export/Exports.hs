@@ -2,6 +2,9 @@ module Ide.Plugin.Export.Exports
   ( Source (..)
   , mkSource
   , getSource
+  , isExplicit
+  , withExportList
+  , addExportList
   , addExport
   , addConstructorExport
   , removeExport
