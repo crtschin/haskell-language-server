@@ -1,0 +1,3 @@
+-- Three lines from one source line.
+-- FOO
+-- BAR

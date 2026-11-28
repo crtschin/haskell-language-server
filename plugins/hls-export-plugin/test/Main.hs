@@ -3,6 +3,7 @@ module Main (main) where
 import           Control.Lens               ((^.))
 import           Data.Char                  (isSpace)
 import           Data.Either                (rights)
+import           Data.Foldable              (find)
 import           Data.List                  (sort)
 import           Data.Maybe                 (fromMaybe)
 import qualified Data.Text                  as T
@@ -43,11 +44,8 @@ codeActionTitles doc range =
         <$> getCodeActions doc range
 
 executeByPrefix :: T.Text -> TextDocumentIdentifier -> Range -> Session ()
-executeByPrefix prefix doc range = do
-    actions <- rights . map toEither <$> getCodeActions doc range
-    case filter (\ca -> prefix `T.isPrefixOf` (ca ^. L.title)) actions of
-        (ca:_) -> executeCodeAction ca
-        []     -> liftIO $ assertFailure (T.unpack prefix <> "...` action not offered")
+executeByPrefix prefix doc range =
+    findAction (prefix `T.isPrefixOf`) doc range >>= executeCodeAction
 
 executeExportAction, executeRemoveAction :: TextDocumentIdentifier -> Range -> Session ()
 executeExportAction = executeByPrefix "Export `"
@@ -187,40 +185,49 @@ checkCase act name file l c check = testCase name $ runExport file $ \doc -> do
 exportCase :: TestName -> FilePath -> UInt -> UInt -> (T.Text -> Assertion) -> TestTree
 exportCase = checkCase exportAndCheck
 
+findAction :: (T.Text -> Bool) -> TextDocumentIdentifier -> Range -> Session CodeAction
+findAction matches doc range = do
+    actions <- rights . map toEither <$> getCodeActions doc range
+    case find (matches . (^. L.title)) actions of
+        Just ca -> pure ca
+        Nothing -> liftIO $ assertFailure $
+            "no matching code action, saw: " <> show (map (^. L.title) actions)
+
 main :: IO ()
 main = defaultTestRunner $ testGroup "Export"
     [ testGroup "Add"
-        [ testGroup "value bindings"
-            [ addCase "add value to export list" "AddExport.hs" 6 0
-                ["module AddExport (foo, Bar, bar)"]
-            , noCase "no action when value already exported" "AddExport.hs" 3 0  -- on `foo`
-            , addCase "append follows a multi-line leading-comma list" "AddExportMultiline.hs" 11 0  -- on `baz`
-                ["  , baz\n  ) where"]
-            ]
-
-        , testGroup "type declarations"
-            [ addCase "add bare type as T(..)" "AddExport.hs" 9 5  -- on `Baz` type name
-                ["Baz(..)", "Baz (..)"]
+        [ testGroup "declarations"
+            [ addCase "add value to export list" "Basic.hs" 7 0  -- on `bar`
+                ["Bare, bar) where"]
+            , noCase "no action when value already exported" "Basic.hs" 3 0  -- on `foo`
+            , addCase "add bare type as T(..)" "Basic.hs" 15 5  -- on `Unlisted` type name
+                ["Unlisted(..)", "Unlisted (..)"]
             ]
 
         , testGroup "constructors"
-            [ addCase "constructor with no parent entry appends T (C)" "AddExport.hs" 9 12  -- on `Baz1`, no Baz entry yet
-                ["Baz (Baz1)", "Baz(Baz1)"]
-            , addCase "constructor under bare-type parent promotes to T(C)" "AddCtor.hs" 3 11  -- on `Bar1`, Bar is IEThingAbs
-                ["Bar (Bar1)", "Bar(Bar1)"]
-            , addCase "constructor merges into existing IEThingWith parent" "AddCtor.hs" 2 18  -- on `Foo2`, Foo has [Foo1]
-                ["Foo (Foo1, Foo2)", "Foo(Foo1, Foo2)"]
-            , noCase "constructor already in IEThingWith children suppresses action" "AddCtor.hs" 2 11  -- on `Foo1`, already child of Foo(Foo1)
-            , noCase "constructor under IEThingAll T(..) suppresses action" "AddCtor.hs" 4 11  -- on `Baz1`, Baz(..) covers it
-            , noCase "constructor exported standalone suppresses action" "AddCtor.hs" 5 11  -- on `Qux1`, Qux1 standalone in list
+            [ addCase "constructor with no parent entry appends T (C)" "Basic.hs" 15 16  -- on `Unlisted1`
+                ["Unlisted (Unlisted1)", "Unlisted(Unlisted1)"]
+            , addCase "constructor under bare-type parent promotes to T(C)" "Basic.hs" 14 12  -- on `Bare1`, Bare is IEThingAbs
+                ["Bare (Bare1)", "Bare(Bare1)"]
+            , addCase "constructor merges into existing IEThingWith parent" "Basic.hs" 11 25  -- on `Foo3`, Foo has [Foo1, Foo2]
+                ["Foo (Foo1, Foo2, Foo3)", "Foo(Foo1, Foo2, Foo3)"]
+            , noCase "constructor already in IEThingWith children suppresses action" "Basic.hs" 11 11  -- on `Foo1`
+            , noCase "constructor under IEThingAll T(..) suppresses action" "Basic.hs" 12 11  -- on `Qux1`
             ]
 
-        , testGroup "type classes"
-            [ addCase "add class as T(..)" "AddClass.hs" 8 6  -- on `Baz` class name
-                ["module AddClass (Foo (..), Bar, Baz (..))"]
-            , noCase "no add action when class exported as T(..)" "AddClass.hs" 2 6  -- on `Foo`, exported as Foo (..)
-            , noCase "no add action when class exported as bare T" "AddClass.hs" 5 6  -- on `Bar`, exported as bare
-            , noCase "no add action on class method" "AddClass.hs" 9 2  -- on `baz1` inside `class Baz a where`
+        , testGroup "declaration kinds"
+            [ addCase "function operator is parenthesized" "AddExportKinds.hs" 8 1  -- on `(<|)`
+                ["(placeholder, (<|))"]
+            , addCase "type synonym operator has no type keyword" "AddExportKinds.hs" 11 7  -- on `(:<>)`
+                ["(placeholder, (:<>))"]
+            , addCase "type family operator gets type keyword" "AddExportKinds.hs" 13 14  -- on `(:+:)`
+                ["(placeholder, type (:+:))"]
+            , addCase "data operator gets type keyword and (..)" "AddExportKinds.hs" 15 7  -- on `(:<)`
+                ["placeholder, type (:<)(..)", "placeholder, type (:<) (..)"]
+            , addCase "pattern synonym gets a pattern prefix" "AddExportKinds.hs" 18 9  -- on `Pat`
+                ["(placeholder, pattern Pat)"]
+            , addCase "add class as T(..)" "AddExportKinds.hs" 20 6  -- on `Cls`
+                ["placeholder, Cls(..)", "placeholder, Cls (..)"]
             ]
 
         , testGroup "layout variants"
@@ -228,106 +235,39 @@ main = defaultTestRunner $ testGroup "Export"
                 ["module AddExportEmpty (foo) where"]
             , addCase "append after a trailing comma" "AddExportTrailingComma.hs" 7 0  -- on `bar`
                 ["( foo, bar"]
-            , addCase "preserve a haddock comment between items" "AddExportComment.hs" 16 0  -- on `quux`
-                ["  -- * For testing\n  , baz\n  , quux\n  ) where"]
-            ]
-
-        , testGroup "declaration kinds"
-            [ addCase "function operator is parenthesized" "AddExportKinds.hs" 8 1  -- on `(<|)`
-                ["(placeholder, (<|))"]
-            , addCase "infix function exports bare name" "AddExportKinds.hs" 11 3  -- on `f`
-                ["(placeholder, f)"]
-            , addCase "newtype exports as T(..)" "AddExportKinds.hs" 13 8  -- on `NT`
-                ["placeholder, NT(..)", "placeholder, NT (..)"]
-            , addCase "type synonym exports bare" "AddExportKinds.hs" 15 5  -- on `Syn`
-                ["(placeholder, Syn)"]
-            , addCase "type family exports bare" "AddExportKinds.hs" 17 12  -- on `TF`
-                ["(placeholder, TF)"]
-            , addCase "pattern synonym gets a pattern prefix" "AddExportKinds.hs" 20 9  -- on `Pat`
-                ["(placeholder, pattern Pat)"]
-            , addCase "data operator gets type keyword and (..)" "AddExportKinds.hs" 22 7  -- on `(:<)`
-                ["placeholder, type (:<)(..)", "placeholder, type (:<) (..)"]
-            ]
-
-        , testGroup "type-level operators"
-            [ addCase "type synonym operator has no type keyword" "AddExportTypeOps.hs" 8 7  -- on `(:<>)`
-                ["(placeholder, (:<>))"]
-            , addCase "type family operator gets type keyword" "AddExportTypeOps.hs" 10 14  -- on `(:+:)`
-                ["(placeholder, type (:+:))"]
-            , addCase "typeclass operator gets type keyword and (..)" "AddExportTypeOps.hs" 12 8  -- on `(:*:)`
-                ["placeholder, type (:*:)(..)", "placeholder, type (:*:) (..)"]
-            , addCase "newtype operator gets type keyword and (..)" "AddExportTypeOps.hs" 14 10  -- on `(:->)`
-                ["placeholder, type (:->)(..)", "placeholder, type (:->) (..)"]
-            , addCase "pattern synonym operator is parenthesized" "AddExportTypeOps.hs" 16 11  -- on `(:++)`
-                ["(placeholder, pattern (:++))"]
+            , exportCase "append to a multi-line leading-comma list keeps the haddock comment" "ExportLayout.hs" 19 0  -- on `quux`
+                (`assertContainsAll` ["-- * Types\n  , Foo", "      )\n  , quux\n  ) where"])
             ]
 
         , testGroup "negative cases"
             [ noCase "no action on implicit module" "Implicit.hs" 3 0
-            , noCase "no action when cursor on RHS" "AddExport.hs" 6 6  -- col 6 is on the `2` of `bar = 2`
-            , noCase "no action on a where-bound name" "AddExportNegatives.hs" 7 8  -- on `whereBound`
-            , noCase "no action on a record field" "AddExportNegatives.hs" 9 18  -- on `recField`
+            , noCase "no action when cursor on RHS" "Basic.hs" 7 6  -- on the `2` of `bar = 2`
+            , noCase "no action on a where-bound name" "Basic.hs" 19 8  -- on `whereBound`
+            , noCase "no action on a record field" "Basic.hs" 21 18  -- on `recField`
+            , noCase "no action on a class method" "AddExportKinds.hs" 21 2  -- on `method`
             ]
 
         , testGroup "CPP in the export list"
             -- EXAMPLE_FLAG is never defined in the test project, so #ifdef branches
             -- are inactive and #ifndef branches are active. The edit must preserve
             -- every directive verbatim and place the new export outside any branch.
-            [ exportCase "preserves a trailing #ifdef block" "CppExportTail.hs" 15 0  -- on `baz`
-                (assertFlaggedBlockKept "baz")
+            [ testCase "preserves #include directives and a trailing #ifdef block" $
+                runExportWith ["CppExportPrelude.h", "CppExportInclude.h"] "CppExport.hs" $ \doc -> do
+                    txt <- exportAndCheck doc (rangeAt 21 0)  -- on `extra`
+                    liftIO $ do
+                        assertContainsAll txt
+                            [ "#include \"CppExportPrelude.h\""
+                            , "#include \"CppExportInclude.h\""
+                            , "( extra, foo"
+                            ]
+                        assertFlaggedBlockKept "extra" txt
 
-            , exportCase "preserves a leading #ifndef block" "CppExportHead.hs" 12 0 $ \txt -> do  -- on `bar`
-                -- the whole guarded block survives verbatim, not just stray substrings
-                assertContainsAll txt ["#ifndef EXAMPLE_FLAG\n    foo\n#endif"]
-                assertExportedUnconditionally "bar" txt
-
-            , exportCase "preserves both #if/#else branches" "CppExportElse.hs" 20 0 $ \txt -> do  -- on `extra`
-                assertContainsAll txt
-                    ["#ifdef EXAMPLE_FLAG", ", windows", "#else", ", posix", "#endif"]
-                assertExportedUnconditionally "extra" txt
-
-            , testCase "preserves an #include directive" $ runExportWith ["CppExportInclude.h"] "CppExportInclude.hs" $ \doc -> do
-                txt <- exportAndCheck doc (rangeAt 13 0)  -- on `extra`
-                liftIO $ do
-                    assertContainsAll txt ["#include \"CppExportInclude.h\"", "( extra, foo"]
-                    assertExportedUnconditionally "extra" txt
-
-            , exportCase "appends a new T(C) beside a CPP block" "CppCtorAppend.hs" 11 11 $ \txt -> do  -- on `Baz1`, no Baz entry yet
-                assertFlaggedBlockKept "Baz1" txt
-                txt `assertAnyInfix` ["Baz (Baz1)", "Baz(Baz1)"]
-
-            , exportCase "adds a separate entry beside an IEThingWith parent" "CppCtorExtend.hs" 8 18 $ \txt -> do  -- on `Foo2`, Foo has [Foo1]
-                assertFlaggedBlockKept "Foo2" txt
-                assertContainsAll txt ["Foo(Foo1)"]
-                txt `assertAnyInfix` ["Foo (Foo2)", "Foo(Foo2)"]
-
-            , exportCase "adds a separate entry without a double comma" "CppCtorMid.hs" 9 18 $ \txt -> do  -- on `Foo2`, Foo(Foo1) precedes `, bar`
-                assertContainsAll txt (flagBlock <> [", bar", "Foo(Foo1)"])
-                txt `assertAnyInfix` ["Foo (Foo2)", "Foo(Foo2)"]
-
-            , exportCase "adds a separate entry beside a bare-type parent" "CppCtorUpgrade.hs" 8 11 $ \txt -> do  -- on `Bar1`, Bar is IEThingAbs
-                assertFlaggedBlockKept "Bar1" txt
-                txt `assertAnyInfix` ["Bar (Bar1)", "Bar(Bar1)"]
-
-            , exportCase "exports an operator beside a CPP block" "CppExportKinds.hs" 12 1  -- on `(<|)`
-                (assertFlaggedBlockKept "(<|)")
-
-            , exportCase "exports a pattern synonym beside a CPP block" "CppExportKinds.hs" 16 8  -- on `Zero`
-                (assertFlaggedBlockKept "pattern Zero")
-
-            , exportCase "adds a separate entry beside a directive inside a constructor list" "CppCtorIntra.hs" 9 24 $ \txt -> do  -- on `Foo2`
-                -- the #ifdef sits inside Foo(...), where an in-place merge would erase it
-                assertContainsAll txt ["#ifdef EXAMPLE_FLAG\n      , Bar\n#endif", "Foo(Foo1"]
-                txt `assertAnyInfix` ["Foo (Foo2)", "Foo(Foo2)"]
-
-            , exportCase "front-inserts even when the close paren shares a line" "CppExportParenShared.hs" 18 0 $ \txt -> do  -- on `baz`
-                assertContainsAll txt (flagBlock <> [", bar )"])
-                assertExportedUnconditionally "baz" txt
-
-            , exportCase "no double comma when the last item already has a trailing comma" "CppExportTrailingComma.hs" 15 0 $ \txt -> do  -- on `baz`
-                -- a doubled `,,` would be caught by exportAndCheck's well-formedness check
-                assertContainsAll txt ["#ifdef EXAMPLE_FLAG", "flagged,", "#endif"]
-                assertExportedUnconditionally "baz" txt
+            , testCase "adds a separate entry beside a bare-type parent" $
+                runExportWith ["CppExportPrelude.h", "CppExportInclude.h"] "CppExport.hs" $ \doc -> do
+                    txt <- exportAndCheck doc (rangeAt 14 11)  -- on `Bar1`, Bar is IEThingAbs
+                    liftIO $ do
+                        assertFlaggedBlockKept "Bar1" txt
+                        txt `assertAnyInfix` ["Bar (Bar1)", "Bar(Bar1)"]
 
             , exportCase "edit stays valid in the unparsed CPP branch" "CppExportOtherBranch.hs" 12 0 $ \txt -> do  -- on `bar`, the only item is in the other branch
                 -- the single item lives under #ifndef, so it is the whole parsed list.
@@ -342,117 +282,79 @@ main = defaultTestRunner $ testGroup "Export"
     , testGroup "Export fixes the unused-binding warning"
         [ knownBrokenForGhcVersions [GHC96]
             "TcRnUnusedName provenance is unstructured before GHC 9.8 (GHC #20115)" $
-          testCase "Export action attaches the -Wunused-top-binds diagnostic" $ runExport "ExportUnusedFix.hs" $ \doc -> do
-            actions <- rights . map toEither <$> getCodeActions doc (rangeAt 6 0)  -- on `unused`
-            case filter ((== "Export `unused`") . (^. L.title)) actions of
-                (ca:_) -> liftIO $ not (null (fromMaybe [] (ca ^. L.diagnostics)))
-                            @? "Export action should carry the unused-binding diagnostic"
-                []     -> liftIO $ assertFailure $
-                            "Export `unused` not offered; saw: " <> show (map (^. L.title) actions)
+          testCase "Export action attaches the -Wunused-top-binds diagnostic" $ runExport "Basic.hs" $ \doc -> do
+            ca <- findAction (== "Export `bar`") doc (rangeAt 6 0)
+            liftIO $ not (null (fromMaybe [] (ca ^. L.diagnostics)))
+                @? "Export action should carry the unused-binding diagnostic"
         ]
 
     , testGroup "Remove"
-        [ testGroup "value bindings"
-            [ removeCase "remove first value (foo)" "RemoveExport.hs" 3 0
-                ["module RemoveExport (Bar, Baz (Baz1))"]
-
-            , noRemoveCase "no remove action when value not in export list" "AddExport.hs" 6 0  -- `bar` not exported
-
-            , removeCase "unexporting the sole export empties the list to ()" "SoleExport.hs" 3 0  -- on `only`, the only export
-                ["module SoleExport () where"]
-
-            , removeCase "remove first item of a multi-line list keeps own-line layout" "RemoveFirstMultiline.hs" 6 0  -- on `foo`, the first export
-                ["( bar\n  , baz\n  ) where"]
-
-            , testCase "remove first item drops its comment, keeps the others'" $ runExport "RemoveItemComment.hs" $ \doc -> do
-                executeRemoveAction doc (rangeAt 6 0)  -- on `foo`, the first export
-                txt <- documentContents doc
-                liftIO $ do
-                    assertContainsAll txt ["bar -- the bar", "baz -- the baz"]
-                    not ("the foo" `T.isInfixOf` txt) @? ("foo's comment survived:\n" <> T.unpack txt)
-
-            , testCase "remove middle item drops its comment, keeps the others'" $ runExport "RemoveItemComment.hs" $ \doc -> do
-                executeRemoveAction doc (rangeAt 9 0)  -- on `bar`, the middle export
-                txt <- documentContents doc
-                liftIO $ do
-                    assertContainsAll txt ["foo -- the foo", "baz -- the baz"]
-                    not ("the bar" `T.isInfixOf` txt) @? ("bar's comment survived:\n" <> T.unpack txt)
-            ]
-
-        , testGroup "type declarations"
-            [ removeCase "remove bare type (middle item)" "RemoveExport.hs" 5 5  -- on `Bar`
-                ["module RemoveExport (foo, Baz (Baz1))"]
-            , removeCase "remove IEThingWith type removes whole entry" "RemoveCtor.hs" 2 5  -- on `Foo` type
-                ["module RemoveCtor (Bar (..), Baz1)"]
-            , removeCase "remove IEThingAll type removes whole entry" "RemoveCtor.hs" 3 5  -- on `Bar` type with (..)
-                ["module RemoveCtor (Foo (Foo1, Foo2), Baz1)"]
+        [ testGroup "declarations"
+            [ removeCase "remove first value (foo)" "Basic.hs" 3 0
+                ["module Basic (Bar, Baz (Baz1)"]
+            , removeCase "remove bare type (middle item)" "Basic.hs" 9 5  -- on `Bar`
+                ["module Basic (foo, Baz (Baz1)"]
+            , removeCase "remove IEThingWith type removes whole entry" "Basic.hs" 11 5  -- on `Foo` type
+                ["Baz (Baz1), Qux (..)"]
+            , removeCase "unexporting the sole export empties the list to ()" "RemoveCtorOp.hs" 4 7  -- on `(:+:)`
+                ["module RemoveCtorOp () where"]
+            , noRemoveCase "no remove action when value not in export list" "Basic.hs" 7 0  -- `bar` not exported
             ]
 
         , testGroup "constructors"
-            [ removeCase "remove sole constructor downgrades to bare type" "RemoveExport.hs" 6 11  -- on `Baz1` in Baz(Baz1)
-                ["module RemoveExport (foo, Bar, Baz)"]
-            , removeCase "remove first constructor of T(C1, C2) yields T (C2)" "RemoveCtor.hs" 2 11  -- on `Foo1` in Foo(Foo1, Foo2)
-                ["Foo (Foo2)", "Foo(Foo2)"]
-            , removeCase "remove second constructor of T(C1, C2) yields T (C1)" "RemoveCtor.hs" 2 18  -- on `Foo2` in Foo(Foo1, Foo2)
-                ["Foo (Foo1)", "Foo(Foo1)"]
-            , removeCase "remove standalone-exported constructor" "RemoveCtor.hs" 4 11  -- on `Baz1` standalone
-                ["module RemoveCtor (Foo (Foo1, Foo2), Bar (..))"]
-            , noRemoveCase "constructor under IEThingAll suppresses remove action" "RemoveCtor.hs" 3 11  -- on `Bar1`, only Bar(..) in list
-            , noRemoveCase "constructor not in export list suppresses remove action" "RemoveCtor.hs" 2 25  -- on `Foo3`, not in any entry
+            [ removeCase "remove sole constructor downgrades to bare type" "Basic.hs" 10 11  -- on `Baz1` in Baz(Baz1)
+                ["(foo, Bar, Baz, Foo"]
+            , removeCase "remove last constructor of T(C1, C2) yields T (C1)" "Basic.hs" 11 18  -- on `Foo2` in Foo(Foo1, Foo2)
+                ["Foo (Foo1), Qux", "Foo(Foo1), Qux"]
+            , removeCase "remove standalone-exported constructor" "Basic.hs" 13 12  -- on `Quux1` standalone
+                ["Qux (..), Bare) where"]
+            , removeCase "downgrading an operator type keeps the type keyword" "RemoveCtorOp.hs" 4 15  -- on `Op`, the sole constructor of (:+:)
+                ["(type (:+:)) where", "(type (:+:) ) where"]
+            , noRemoveCase "constructor under IEThingAll suppresses remove action" "Basic.hs" 12 11  -- on `Qux1`, only Qux(..) in list
+            , noRemoveCase "constructor not in export list suppresses remove action" "Basic.hs" 11 25  -- on `Foo3`, not in any entry
 
             -- `data Bar = Bar`: unexporting the constructor leaves the abstract type
             -- exported, so unexport must skip the standalone-removal fallback.
-            , noRemoveCase "constructor sharing its type's name does not unexport the type" "RemoveCtorNameClash.hs" 5 11  -- on the constructor `Bar`
+            , noRemoveCase "constructor sharing its type's name does not unexport the type" "Basic.hs" 9 11  -- on the constructor `Bar`
+            ]
 
-            , removeCase "unexporting the type still works when a constructor shares its name" "RemoveCtorNameClash.hs" 5 5  -- on the type `Bar`
-                ["module RemoveCtorNameClash (foo)"]
-            , removeCase "downgrading an operator type keeps the type keyword" "RemoveCtorOp.hs" 4 15  -- on `Op`, the sole constructor of (:+:)
-                ["(type (:+:)) where", "(type (:+:) ) where"]
-
-            , testCase "removing a child preserves the survivors' multiline layout" $ runExport "RemoveCtorMultiline.hs" $ \doc -> do
-                executeRemoveAction doc (rangeAt 8 18)  -- on `Foo2` in the data decl, the middle child
-                txt <- documentContents doc
-                let region = exportListRegion txt
-                liftIO $ do
-                    -- Survivors keep their layout: head not flushed to `(`, Foo3 on its own line.
-                    assertContainsAll txt ["( Foo1\n", "        , Foo3\n"]
-                    not (any ("Foo2" `T.isInfixOf`) region) @? ("Foo2 still exported:\n" <> T.unpack txt)
-
-            , testCase "removing a middle child keeps the surviving siblings' comments" $ runExport "RemoveCtorComment.hs" $ \doc -> do
-                executeRemoveAction doc (rangeAt 8 18)  -- on `Foo2` in the data decl
+        , testGroup "layout and comments"
+            [ testCase "remove first item keeps own-line layout and drops its comment" $ runExport "ExportLayout.hs" $ \doc -> do
+                executeRemoveAction doc (rangeAt 11 0)  -- on `foo`, the first export
                 txt <- documentContents doc
                 liftIO $ do
-                    assertContainsAll txt ["Foo1 -- first", "Foo3 -- third"]
-                    -- The removed child takes its own trailing comment with it.
+                    assertContainsAll txt ["( bar -- the bar\n  -- * Types\n  , Foo\n"]
+                    not ("the foo" `T.isInfixOf` txt) @? ("foo's comment survived:\n" <> T.unpack txt)
+
+            , testCase "remove middle item drops its comment, keeps the others'" $ runExport "ExportLayout.hs" $ \doc -> do
+                executeRemoveAction doc (rangeAt 14 0)  -- on `bar`, the middle export
+                txt <- documentContents doc
+                liftIO $ do
+                    assertContainsAll txt ["( foo -- the foo\n", "Foo1 -- first"]
+                    not ("the bar" `T.isInfixOf` txt) @? ("bar's comment survived:\n" <> T.unpack txt)
+
+            , testCase "removing a middle child keeps the survivors' layout and comments" $ runExport "ExportLayout.hs" $ \doc -> do
+                executeRemoveAction doc (rangeAt 17 18)  -- on `Foo2` in the data decl
+                txt <- documentContents doc
+                liftIO $ do
+                    assertContainsAll txt ["( Foo1 -- first\n", "      , Foo3 -- third\n"]
                     not ("second" `T.isInfixOf` txt) @? ("Foo2's comment lingered:\n" <> T.unpack txt)
 
-            , testCase "removing the head child keeps the new head's own comment" $ runExport "RemoveCtorComment.hs" $ \doc -> do
-                executeRemoveAction doc (rangeAt 8 11)  -- on `Foo1` in the data decl
+            , testCase "removing the head child keeps the new head's own comment" $ runExport "ExportLayout.hs" $ \doc -> do
+                executeRemoveAction doc (rangeAt 17 11)  -- on `Foo1` in the data decl
                 txt <- documentContents doc
                 liftIO $ do
-                    -- Foo2 slides into Foo1's slot keeping its own `-- second`,
-                    -- and Foo1's `-- first` is deleted along with Foo1.
                     assertContainsAll txt ["Foo2 -- second", "Foo3 -- third"]
                     not ("first" `T.isInfixOf` txt) @? ("Foo1's comment survived:\n" <> T.unpack txt)
             ]
 
-        , testGroup "type classes"
-            [ removeCase "remove class exported as T(..)" "RemoveClass.hs" 2 6  -- on `Foo`
-                ["module RemoveClass (Bar, Baz (baz1))"]
-            , removeCase "remove class exported as bare T" "RemoveClass.hs" 5 6  -- on `Bar`
-                ["module RemoveClass (Foo (..), Baz (baz1))"]
-            , removeCase "remove class exported as T(method)" "RemoveClass.hs" 8 6  -- on `Baz`
-                ["module RemoveClass (Foo (..), Bar)"]
-            , noRemoveCase "no remove action when class not in export list" "RemoveClass.hs" 12 6  -- on `Qux`, not exported
-            , noRemoveCase "no remove action on class method" "RemoveClass.hs" 9 2  -- on `baz1` inside `class Baz a where`
-            ]
-
         , testGroup "negative cases"
-            [ noRemoveCase "no remove action on implicit module" "Implicit.hs" 3 0
-            , noRemoveCase "no remove action when cursor on RHS" "RemoveExport.hs" 3 6  -- on the `1` of `foo = 1`
+            [ noRemoveCase "no remove action when cursor on RHS" "Basic.hs" 4 6  -- on the `1` of `foo = 1`
             -- A reprint would erase the directives the parser stripped, so removal is
             -- declined whenever the export list holds a CPP directive.
-            , noRemoveCase "no remove action under a CPP export list" "CppExportTail.hs" 9 0  -- on `foo`, exported beside an #ifdef block
+            , testCase "no remove action under a CPP export list" $
+                runExportWith ["CppExportPrelude.h", "CppExportInclude.h"] "CppExport.hs" $ \doc ->
+                    noRemoveOffered doc (rangeAt 12 0)  -- on `foo`, exported beside an #ifdef block
             ]
         ]
     ]

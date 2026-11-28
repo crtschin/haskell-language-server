@@ -9,15 +9,14 @@ placeholder = 0
 (<|) :: a -> a -> a
 (<|) x _ = x
 
-a `f` b = b
+type (:<>) = ()
 
-newtype NT = NT ()
+type family (:+:)
 
-type Syn = ()
-
-type family TF p
+data (:<) = Mk
 
 pattern Pat :: a -> (a, a)
 pattern Pat a = (a, a)
 
-data (:<) = Mk
+class Cls a where
+  method :: a -> Int

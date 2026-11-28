@@ -30,6 +30,7 @@ extra-source-files:
   plugins/**/*.cabal
   plugins/**/*.yaml
   plugins/**/*.txt
+  plugins/**/*.h
   plugins/**/*.hs
 
   ghcide-test/data/**/*.cabal
