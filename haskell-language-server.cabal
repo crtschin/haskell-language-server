@@ -1998,10 +1998,14 @@ library hls-export-plugin
     , stm
     , text
     , text-rope
+    , transformers
   default-extensions:
     , DataKinds
     , LambdaCase
+    , NoFieldSelectors
+    , OverloadedRecordDot
     , OverloadedStrings
+    , RecordWildCards
 
 test-suite hls-export-plugin-tests
   import:           defaults, pedantic, test-defaults, warnings

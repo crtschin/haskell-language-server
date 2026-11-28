@@ -15,7 +15,7 @@ import           Development.IDE.GHC.Compat
 data ExportFlavor
   = ExportName     -- ^ bare @x@. An operator is parenthesized with no @type@ keyword. Values and type synonyms.
   | ExportPattern  -- ^ @pattern X@.
-  | ExportFamily   -- ^ bare @T@. An operator becomes @type (:<)@. Type and data families.
+  | ExportAbs      -- ^ bare @T@. An operator becomes @type (:<)@. Type and data families, and abstract types.
   | ExportAll      -- ^ @T(..)@. An operator becomes @type (:<)(..)@. Data, newtype, and class.
   deriving Eq
 
@@ -32,23 +32,20 @@ locateUnderCursor pos ps = classifyHeader pos (unLoc ps) <|> classifyInDecl
       L _ decl <- find (\(L l _) -> pos `isInsideSrcSpan` locA l) (hsmodDecls (unLoc ps))
       classifyDecl pos decl
 
--- | Match column-free so cursor anywhere on the @module ... where@ line counts.
 classifyHeader :: Position -> HsModule GhcPs -> Maybe UnderCursor
 classifyHeader pos mod = inName <|> inExports
   where
+    -- Line-based, so the cursor anywhere on the @module ... where@ line counts.
     isIn :: HasSrcSpan a => Maybe a -> Maybe UnderCursor
     isIn el = el >>= \n -> if pos `isInsideSrcSpanLines` getLoc n then Just Header else Nothing
     inName = isIn $ hsmodName mod
     inExports = isIn $ hsmodExports mod
 
--- | Line-based span containment, column-agnostic.
 isInsideSrcSpanLines :: Position -> SrcSpan -> Bool
 Position l _ `isInsideSrcSpanLines` r = case srcSpanToRange r of
   Just (Range (Position sl _) (Position el _)) -> sl <= l && l <= el
   _                                            -> False
 
--- | The exportable entities a top-level declaration defines, each with its
--- export flavor and located name.
 declEntities :: HsDecl GhcPs -> [(ExportFlavor, LIdP GhcPs)]
 declEntities = \case
   ValD _ (PatSynBind _ PSB {psb_id = lname}) -> [(ExportPattern, lname)]
@@ -56,7 +53,7 @@ declEntities = \case
   TyClD _ DataDecl {tcdLName = lname}        -> [(ExportAll, lname)]
   TyClD _ ClassDecl {tcdLName = lname}       -> [(ExportAll, lname)]
   TyClD _ SynDecl {tcdLName = lname}         -> [(ExportName, lname)]
-  TyClD _ FamDecl {tcdFam = fam}             -> [(ExportFamily, fdLName fam)]
+  TyClD _ FamDecl {tcdFam = fam}             -> [(ExportAbs, fdLName fam)]
   _                                          -> []
 
 classifyDecl :: Position -> HsDecl GhcPs -> Maybe UnderCursor
@@ -67,7 +64,7 @@ classifyDecl pos decl =
   where
     onName (L l _) = pos `isInsideSrcSpan` locA l
     -- A signature is not a definition (so not in 'declEntities'), but its name
-    -- is still a valid place to invoke the export action from.
+    -- is still a valid place to call the export action from.
     typeSigUnderCursor = case decl of
       SigD _ (TypeSig _ names _) -> Decl ExportName . unLoc <$> find onName names
       _                          -> Nothing

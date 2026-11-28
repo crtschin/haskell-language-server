@@ -1,68 +1,50 @@
 {-# LANGUAGE CPP                 #-}
-{-# LANGUAGE LambdaCase          #-}
-{-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Ide.Plugin.Export.ExactPrint
   ( LExportList
-  , mkExportIE
+  , renderExport
+  , parseIE
   , appendIE
   , removeMatchingIE
   , addCtorUnderParent
   , removeCtorUnderParent
   , printExportList
-  , printIE
   , freshCtorEntry
   ) where
 
 import           Control.Lens                              (_last, over)
+import           Control.Monad                             (guard)
 import           Data.Bifunctor                            (first)
-import           Data.List                                 (mapAccumL)
-import           Data.List.NonEmpty                        (NonEmpty (..))
+import           Data.Maybe                                (listToMaybe)
 import           Data.Text                                 (Text)
 import qualified Data.Text                                 as T
+import           Data.Traversable                          (mapAccumM)
 import           Development.IDE.GHC.Compat
-import           Development.IDE.GHC.Orphans               ()
-#if MIN_VERSION_ghc(9,11,0)
-import           GHC                                       (DeltaPos (..),
-                                                            TrailingAnn (..))
-#elif MIN_VERSION_ghc(9,9,0)
-import           GHC                                       (DeltaPos (..),
-                                                            LocatedL,
-                                                            NoAnn (..),
-                                                            TrailingAnn (..),
-                                                            noAnn)
-#else
-import           GHC                                       (DeltaPos (..),
-                                                            LocatedL,
-                                                            TrailingAnn (..),
-                                                            addAnns,
-                                                            emptyComments,
-                                                            noAnn)
-#endif
-
-import           Language.Haskell.GHC.ExactPrint           (exactPrint,
-                                                            getEntryDP,
-                                                            setEntryDP)
-
-#if MIN_VERSION_ghc(9,11,0)
-import           GHC                                       (EpToken (..),
-                                                            LocatedLI)
-#else
-import           GHC                                       (AddEpAnn (..))
-#endif
-import           Data.Maybe                                (listToMaybe)
 import           Development.IDE.GHC.ExactPrint.Annotation (ensureTrailingComma,
-                                                            epl, isCommaAnn,
+                                                            isCommaAnn,
                                                             removeTrailingCommaAnn,
                                                             trailingAnns,
                                                             withTrailingComma)
-import           Development.IDE.GHC.ExactPrint.IE         (WrapKind (..),
-                                                            ieVar, mkIEName,
-                                                            mkTypeWithIE,
-                                                            mkWrappedName)
+import           Development.IDE.GHC.Orphans               ()
+import           Development.IDE.GHC.Util                  (printRdrName)
+#if MIN_VERSION_ghc(9,11,0)
+import           GHC                                       (DeltaPos (..),
+                                                            LocatedLI,
+                                                            TrailingAnn (..))
+#else
+import           GHC                                       (DeltaPos (..),
+                                                            LocatedL,
+                                                            TrailingAnn (..))
+#endif
+import qualified GHC.LanguageExtensions.Type               as LangExt
 import           Ide.Plugin.Export.Cursor                  (ExportFlavor (..))
 import           Ide.Plugin.Export.Utils
+import           Language.Haskell.GHC.ExactPrint           (exactPrint,
+                                                            getEntryDP,
+                                                            makeDeltaAst,
+                                                            setEntryDP)
+import           Language.Haskell.GHC.ExactPrint.Parsers   (parseWith)
 
 -- | Located @[LIE GhcPs]@, the shape of an export list. Aliases either
 -- 'LocatedL' (pre-9.12) or 'LocatedLI'.
@@ -72,74 +54,29 @@ type LExportList = LocatedLI [LIE GhcPs]
 type LExportList = LocatedL [LIE GhcPs]
 #endif
 
-mkExportIE :: ExportFlavor -> RdrName -> LIE GhcPs
-mkExportIE flavor rdr = case flavor of
-  ExportName    -> ieVar (mkWrappedName WrapPlain rdr)
-  ExportPattern -> ieVar (mkWrappedName WrapPattern rdr)
-  ExportFamily  -> mkTypeAbsIE' (mkWrappedName keywordWrap rdr)
-  ExportAll     -> mkTypeAllIE' (mkWrappedName keywordWrap rdr)
+renderExport :: ExportFlavor -> RdrName -> Text
+renderExport flavor rdr = case flavor of
+  ExportName    -> name
+  ExportPattern -> "pattern " <> name
+  ExportAbs     -> keyword <> name
+  ExportAll     -> keyword <> name <> " (..)"
   where
-    keywordWrap
-      | isSymOcc (rdrNameOcc rdr) = WrapType
-      | otherwise                 = WrapPlain
+    name = T.pack (printRdrName rdr)
+    keyword
+      | isSymOcc (rdrNameOcc rdr) = "type "
+      | otherwise                 = ""
 
+renderTypeWith :: RdrName -> [RdrName] -> Text
+renderTypeWith parent ctors =
+  T.pack (printRdrName parent) <> " (" <> T.intercalate ", " (T.pack . printRdrName <$> ctors) <> ")"
 
-mkTypeAbsIE' :: LIEWrappedName GhcPs -> LIE GhcPs
-mkTypeAbsIE' w =
-  reLocA $ L noSrcSpan $ IEThingAbs
-#if MIN_VERSION_ghc(9,11,0)
-    Nothing
-#elif MIN_VERSION_ghc(9,8,0)
-    (Nothing, noAnn)
-#else
-    noAnn
-#endif
-    w
-#if MIN_VERSION_ghc(9,9,0)
-    Nothing
-#endif
-
-mkTypeAllIE' :: LIEWrappedName GhcPs -> LIE GhcPs
-mkTypeAllIE' w =
-  reLocA $ L noSrcSpan $ IEThingAll
-#if MIN_VERSION_ghc(9,11,0)
-    (Nothing, (EpTok (epl 1), EpTok (epl 0), EpTok (epl 0)))
-#elif MIN_VERSION_ghc(9,9,0)
-    ( Nothing
-    , [ AddEpAnn AnnOpenP  (epl 1)
-      , AddEpAnn AnnDotdot (epl 0)
-      , AddEpAnn AnnCloseP (epl 0)
-      ]
-    )
-#elif MIN_VERSION_ghc(9,8,0)
-    ( Nothing
-    , addAnns mempty
-        [ AddEpAnn AnnOpenP  (epl 1)
-        , AddEpAnn AnnDotdot (epl 0)
-        , AddEpAnn AnnCloseP (epl 0)
-        ]
-        emptyComments
-    )
-#else
-    (addAnns mempty
-       [ AddEpAnn AnnOpenP  (epl 1)
-       , AddEpAnn AnnDotdot (epl 0)
-       , AddEpAnn AnnCloseP (epl 0)
-       ]
-       emptyComments)
-#endif
-    w
-#if MIN_VERSION_ghc(9,9,0)
-    Nothing
-#endif
--- | Map over an @IEThingWith@'s listed constructors, a no-op for any other item.
-overThingWithChildren :: ([LIEWrappedName GhcPs] -> [LIEWrappedName GhcPs]) -> IE GhcPs -> IE GhcPs
-#if MIN_VERSION_ghc(9,9,0)
-overThingWithChildren f (IEThingWith x n w cs docs) = IEThingWith x n w (f cs) docs
-#else
-overThingWithChildren f (IEThingWith x n w cs)      = IEThingWith x n w (f cs)
-#endif
-overThingWithChildren _ ie                          = ie
+-- | Parse an export item through a throwaway module header.
+parseIE :: DynFlags -> Text -> Maybe (LIE GhcPs)
+parseIE dflags item =
+  case parseWith (foldl xopt_set dflags [LangExt.PatternSynonyms, LangExt.ExplicitNamespaces])
+         "" parseModule (T.unpack ("module M (" <> item <> ") where")) of
+    Right ps | Just (L _ [ie]) <- hsmodExports (unLoc (makeDeltaAst ps)) -> Just ie
+    _ -> Nothing
 
 appendIE :: LIE GhcPs -> LExportList -> LExportList
 appendIE item (L l items) = L l (fixLast items ++ [newItem (not (null items))])
@@ -152,7 +89,6 @@ appendIE item (L l items) = L l (fixLast items ++ [newItem (not (null items))])
     fixLast = over _last (first addSep)
     addSep = maybe ensureTrailingComma withTrailingComma (separatorComma items)
 
--- | The trailing comma that separates existing items, if the list has any.
 separatorComma :: [LIE GhcPs] -> Maybe TrailingAnn
 separatorComma items =
   listToMaybe [c | L ann _ <- items, c <- trailingAnns ann, isCommaAnn c]
@@ -179,95 +115,81 @@ removeMatchingIE p (L l items) = L l <$> removeListItem (p . unLoc) items
 
 -- | 'Nothing' iff @ctor@ is already exported (via @T(..)@ or @T(...,ctor,...)@).
 addCtorUnderParent ::
+  DynFlags ->
   -- | parent
   RdrName ->
   -- | ctor
   RdrName ->
   LExportList ->
   Maybe LExportList
-addCtorUnderParent parent ctor lst@(L l items) =
+addCtorUnderParent dflags parent ctor lst@(L l items) = do
+  newThing <- parseIE dflags (renderTypeWith parent [ctor])
+  (_, [newChild], _) <- ieThingWith (unLoc newThing)
   case ctorExportEdit parent ctor items of
     AlreadyExported -> Nothing
     AppendParent    -> Just (appendIE newThing lst)
     UpgradeBare     -> Just (L l (map (transformParent (const (unLoc newThing))) items))
-    AddChild        -> Just (L l (map (transformParent (addCtorChildren ctor)) items))
+    AddChild        -> Just (L l (map (transformParent (addChild newChild)) items))
   where
-    newThing = mkTypeWithIE parent (ctor :| [])
     transformParent f (L itemLoc ie)
       | parentNameIs (rdrNameFS parent) ie = L itemLoc (f ie)
       | otherwise = L itemLoc ie
 
--- | Append @ctor@ to an @IEThingWith@'s children, reusing the sibling separator
--- comma. No-op for other items.
-addCtorChildren :: RdrName -> IE GhcPs -> IE GhcPs
-addCtorChildren ctor = overThingWithChildren $ \cs ->
-  let hasSibling = not (null cs)
-      newChild = setEntryDP (mkIEName ctor) (SameLine (if hasSibling then 1 else 0))
-   in (if hasSibling then map (first ensureTrailingComma) cs else cs) ++ [newChild]
+addChild :: LIEWrappedName GhcPs -> IE GhcPs -> IE GhcPs
+addChild child ie = case ieThingWith ie of
+  Just (_, cs, setChildren) ->
+    let hasSibling = not (null cs)
+        newChild = setEntryDP child (SameLine (if hasSibling then 1 else 0))
+     in setChildren ((if hasSibling then map (first ensureTrailingComma) cs else cs) ++ [newChild])
+  Nothing -> ie
 
 -- | Remove @ctor@ from the export entries listing it under @parent@, or
 -- 'Nothing' if none does. Removing the last child downgrades @T(ctor)@ to @T@.
 removeCtorUnderParent ::
+  DynFlags ->
   -- | parent
   RdrName ->
   -- | ctor
   RdrName ->
   LExportList ->
   Maybe LExportList
-removeCtorUnderParent parent ctor (L l items)
-  | edited    = Just (L l items')
-  | otherwise = Nothing
+removeCtorUnderParent dflags parent ctor (L l items) = do
+  (edited, items') <- mapAccumM dropCtor False items
+  guard edited
+  Just (L l items')
   where
-    (edited, items') = mapAccumL dropCtor False items
     parentFS = rdrNameFS parent
-    ctorFS = rdrNameFS ctor
-    isCtor = (== ctorFS) . lieWrappedNameFS
+    isCtor = (== rdrNameFS ctor) . lieWrappedNameFS
 
     dropCtor changed item@(L itemLoc ie)
       | parentNameIs parentFS ie
-      , Just children <- ieThingWithChildren ie
+      , Just (thing, children, setChildren) <- ieThingWith ie
       , Just kept <- removeListItem isCtor children
-      = (True, L itemLoc (rebuild ie kept))
-      | otherwise = (changed, item)
-
-    -- An empty child list means ctor was the only child, so collapse T(ctor)
-    -- to a bare T.
-    rebuild ie []   = downgradeToAbs ie
-    rebuild ie kept = overThingWithChildren (const kept) ie
-
-    -- Reuse the head so type/operator wrapping survives, e.g. `type (:<)(C)`
-    -- becomes `type (:<)`.
-    downgradeToAbs ie = case ieThingWithHead ie of
-      Just n  -> unLoc (mkTypeAbsIE' (setEntryDP n (SameLine 0)))
-      Nothing -> ie
+      = (,) True . L itemLoc <$>
+          if null kept
+            then unLoc <$> parseIE dflags (renderExport ExportAbs (ieWrappedName (unLoc thing)))
+            else Just (setChildren kept)
+      | otherwise = Just (changed, item)
 
 printExportList :: LExportList -> Text
 printExportList l = T.pack (exactPrint (setEntryDP l (SameLine 0)))
 
--- | Exactprint a single item, without the surrounding list layout. Dropping
--- the trailing comma keeps a spliced item from carrying it into text that
--- already supplies its own.
-printIE :: LIE GhcPs -> Text
-printIE item = T.pack (exactPrint (setEntryDP (first removeTrailingCommaAnn item) (SameLine 0)))
-
 -- | A fresh @T(ctor)@ export entry rendered as text, or 'Nothing' if @ctor@ is
--- already exported in the parsed list. Under CPP this adds a standalone entry so
--- the splice never reprints an existing @T(...)@ span, which can straddle a
--- directive.
+-- already exported in the parsed list.
+--
+-- Under CPP this adds a standalone entry so the splice doesn't reprint an
+-- existing @T(...)@ span, which could collide with a directive.
 freshCtorEntry :: RdrName -> RdrName -> [LIE GhcPs] -> Maybe Text
 freshCtorEntry parent ctor items = case ctorExportEdit parent ctor items of
   AlreadyExported -> Nothing
-  _               -> Just (printIE (mkTypeWithIE parent (ctor :| [])))
+  _               -> Just (renderTypeWith parent [ctor])
 
--- | How to add @ctor@ to an export list so its parent type @T@ exports it.
 data CtorEdit
-  = AlreadyExported  -- ^ @T(..)@ or @T(..., ctor, ...)@, nothing to do
-  | AppendParent     -- ^ no entry for @T@ yet, add a fresh @T(ctor)@
-  | UpgradeBare      -- ^ replace the bare @T@ entry with @T(ctor)@
-  | AddChild         -- ^ add @ctor@ to the existing @T(...)@ entry
+  = AlreadyExported
+  | AppendParent
+  | UpgradeBare
+  | AddChild
 
--- | Decide how @ctor@ should be added under @parent@, classifying the first
--- matching export item by its constructor-carrying shape.
 ctorExportEdit :: RdrName -> RdrName -> [LIE GhcPs] -> CtorEdit
 ctorExportEdit parent ctor = go
   where
@@ -278,7 +200,7 @@ ctorExportEdit parent ctor = go
       | parentNameIs parentFS ie = case ie of
           IEThingAll {} -> AlreadyExported
           IEThingAbs {} -> UpgradeBare
-          _ | Just cs <- ieThingWithChildren ie ->
+          _ | Just (_, cs, _) <- ieThingWith ie ->
                 if any ((== ctorFS) . lieWrappedNameFS) cs then AlreadyExported else AddChild
             | otherwise -> go rest
       | otherwise = go rest
