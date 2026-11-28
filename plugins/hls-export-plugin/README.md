@@ -4,8 +4,10 @@ The export plugin provides code actions for working with a module's export list.
 
 - Export `...`: on top-level declaration symbols.
 - Unexport `...`: on exported top-level declaration symbols.
+- Export all symbols: on the module header, exports every top-level symbol
+  that is not exported yet. A module without an export list gets one.
 
-Actions are only offered when the module has an explicit export list.
+Export and Unexport are only offered when the module has an explicit export list.
 
 ## Known limitations
 

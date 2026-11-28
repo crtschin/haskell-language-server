@@ -3,7 +3,7 @@ module Ide.Plugin.Export (descriptor) where
 import           Control.Concurrent.STM           (atomically)
 import           Control.Lens
 import           Control.Monad.IO.Class           (liftIO)
-import           Data.Maybe                       (catMaybes)
+import           Data.Maybe                       (catMaybes, maybeToList)
 import           Data.Text                        (Text)
 import qualified Data.Text                        as T
 import           Development.IDE
@@ -50,7 +50,7 @@ actionsAt state uri nfp src = \case
     [ action ("Export " <> quoted (printRdrName t <> "(" <> printRdrName c <> ")")) <$> addConstructorExport src t c
     , action ("Unexport " <> quoted (printRdrName c)) <$> removeConstructorExport src t c
     ]
-  Header -> pure []
+  Header -> pure (maybeToList (action "Export all symbols" <$> exportAll src))
   where
     action title edits = mkAction title & L.edit ?~ singleFileEdit uri edits
     withFixes [] = id

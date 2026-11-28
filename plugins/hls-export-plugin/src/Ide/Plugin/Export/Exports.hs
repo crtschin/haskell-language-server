@@ -6,18 +6,22 @@ module Ide.Plugin.Export.Exports
   , addConstructorExport
   , removeExport
   , removeConstructorExport
+  , exportAll
   ) where
 
 import           Control.Applicative                ((<|>))
 import           Control.Monad.Trans.Except         (ExceptT)
+import           Data.Maybe                         (isJust)
 import           Data.Text                          (Text)
+import qualified Data.Text                          as T
 import           Data.Text.Utf16.Rope.Mixed         (Rope)
 import           Development.IDE
 import           Development.IDE.Core.PluginUtils   (useE)
 import           Development.IDE.GHC.Compat
 import           Development.IDE.GHC.ExactPrint.CPP (spanHasCpp)
 import           Ide.Plugin.Error                   (PluginError)
-import           Ide.Plugin.Export.Cursor           (ExportFlavor)
+import           Ide.Plugin.Export.Cursor           (ExportFlavor,
+                                                     moduleEntities)
 import           Ide.Plugin.Export.ExactPrint
 import           Ide.Plugin.Export.Utils
 import           Language.Haskell.GHC.ExactPrint    (makeDeltaAst)
@@ -43,6 +47,9 @@ getSource :: NormalizedFilePath -> ExceptT PluginError Action (Maybe Source)
 getSource nfp = do
   pm <- useE GetParsedModuleWithComments nfp
   mkSource (snd <$> useE GetFileContents nfp) pm
+
+isExplicit :: ParsedSource -> Bool
+isExplicit = isJust . hsmodExports . unLoc
 
 isExported :: RdrName -> ParsedSource -> Bool
 isExported n ps = case hsmodExports (unLoc ps) of
@@ -72,11 +79,12 @@ withExportList src reprint splice = do
 addExport :: Source -> ExportFlavor -> RdrName -> Maybe [TextEdit]
 addExport src flavor n
   | n `isExported` src.parsed = Nothing
-  | otherwise = appendExport src (renderExport flavor n)
+  | otherwise = appendExports src [renderExport flavor n]
 
-appendExport :: Source -> Text -> Maybe [TextEdit]
-appendExport src item =
-  withExportList src (\l -> (`appendIE` l) <$> parseIE src.dflags item) (Just (const (Just item)))
+appendExports :: Source -> [Text] -> Maybe [TextEdit]
+appendExports src items =
+  withExportList src (\l -> foldl (flip appendIE) l <$> traverse (parseIE src.dflags) items)
+    (Just (const (Just (T.intercalate ", " items))))
 
 addConstructorExport :: Source -> RdrName -> RdrName -> Maybe [TextEdit]
 addConstructorExport src parent ctor
@@ -97,3 +105,24 @@ removeConstructorExport src parent ctor =
     -- Fall back to a standalone entry for the constructor. A bare uppercase
     -- entry denotes the type, so skip a constructor named like its type.
     <|> if rdrNameFS ctor == rdrNameFS parent then Nothing else removeExport src ctor
+
+-- | Exports every top-level entity that is not exported yet. Adds one, if the
+-- module didn't declare exports.
+exportAll :: Source -> Maybe [TextEdit]
+exportAll src
+  | null missing          = Nothing
+  | isExplicit src.parsed = appendExports src missing
+  | otherwise             = addExportList src.parsed missing
+  where
+    missing = [ renderExport flavor n | (flavor, n) <- moduleEntities src.parsed, not (n `isExported` src.parsed) ]
+
+addExportList :: ParsedSource -> [Text] -> Maybe [TextEdit]
+addExportList ps items = do
+  Range _ end <- anchor
+  Just [TextEdit (Range end end) (" (" <> T.intercalate ", " items <> ")")]
+  where
+    modl = unLoc ps
+    -- A module warning pragma sits between the module name and the export list.
+    anchor = case hsmodDeprecMessage (hsmodExt modl) of
+      Just lwarn -> srcSpanToRange (getLoc lwarn)
+      Nothing    -> srcSpanToRange . getLoc =<< hsmodName modl
