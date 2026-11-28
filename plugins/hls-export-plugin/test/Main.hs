@@ -47,9 +47,10 @@ executeByPrefix :: T.Text -> TextDocumentIdentifier -> Range -> Session ()
 executeByPrefix prefix doc range =
     findAction (prefix `T.isPrefixOf`) doc range >>= executeCodeAction
 
-executeExportAction, executeRemoveAction :: TextDocumentIdentifier -> Range -> Session ()
+executeExportAction, executeRemoveAction, executeExportAllAction :: TextDocumentIdentifier -> Range -> Session ()
 executeExportAction = executeByPrefix "Export `"
 executeRemoveAction = executeByPrefix "Unexport `"
+executeExportAllAction = executeByPrefix "Export all symbols"
 
 noActionWithPrefix :: T.Text -> TextDocumentIdentifier -> Range -> Session ()
 noActionWithPrefix prefix doc range = do
@@ -57,9 +58,10 @@ noActionWithPrefix prefix doc range = do
     liftIO $ not (any (prefix `T.isPrefixOf`) titles)
         @? ("Did not expect " <> T.unpack prefix <> " action, saw: " <> show titles)
 
-noExportOffered, noRemoveOffered :: TextDocumentIdentifier -> Range -> Session ()
+noExportOffered, noRemoveOffered, noExportAllOffered :: TextDocumentIdentifier -> Range -> Session ()
 noExportOffered = noActionWithPrefix "Export `"
 noRemoveOffered = noActionWithPrefix "Unexport `"
+noExportAllOffered = noActionWithPrefix "Export all symbols"
 
 -- | Fail unless some variant is an infix of the text. The message dumps it.
 assertAnyInfix :: T.Text -> [T.Text] -> Assertion
@@ -160,9 +162,10 @@ execCase exec name file l c expected = testCase name $ runExport file $ \doc -> 
     _ <- runAndCheck exec doc (rangeAt l c)
     containsAfter doc expected
 
-addCase, removeCase :: TestName -> FilePath -> UInt -> UInt -> [T.Text] -> TestTree
-addCase    = execCase executeExportAction
-removeCase = execCase executeRemoveAction
+addCase, removeCase, exportAllCase :: TestName -> FilePath -> UInt -> UInt -> [T.Text] -> TestTree
+addCase       = execCase executeExportAction
+removeCase    = execCase executeRemoveAction
+exportAllCase = execCase executeExportAllAction
 
 -- | Assert the export or unexport action is not offered at the position.
 absentCase :: (TextDocumentIdentifier -> Range -> Session ())
@@ -170,9 +173,10 @@ absentCase :: (TextDocumentIdentifier -> Range -> Session ())
 absentCase absent name file l c = testCase name $ runExport file $ \doc ->
     absent doc (rangeAt l c)
 
-noCase, noRemoveCase :: TestName -> FilePath -> UInt -> UInt -> TestTree
-noCase       = absentCase noExportOffered
-noRemoveCase = absentCase noRemoveOffered
+noCase, noRemoveCase, noExportAllCase :: TestName -> FilePath -> UInt -> UInt -> TestTree
+noCase          = absentCase noExportOffered
+noRemoveCase    = absentCase noRemoveOffered
+noExportAllCase = absentCase noExportAllOffered
 
 -- | Run @act@ at the position, assert the list is well-formed, then run @check@
 -- over the resulting document text.
@@ -356,5 +360,25 @@ main = defaultTestRunner $ testGroup "Export"
                 runExportWith ["CppExportPrelude.h", "CppExportInclude.h"] "CppExport.hs" $ \doc ->
                     noRemoveOffered doc (rangeAt 12 0)  -- on `foo`, exported beside an #ifdef block
             ]
+        ]
+
+    , testGroup "Export all symbols"
+        [ exportAllCase "implicit module gets a list of every top-level symbol" "ExportAllImplicit.hs" 1 7
+            ["module ExportAllImplicit {-# DEPRECATED \"old\" #-} (value, (<|), Rec (..), Cls (..), Syn, pattern Pat, c_sin, left, right) where"]
+        , exportAllCase "explicit list gains the missing symbols of every kind" "AddExportKinds.hs" 3 7
+            [ "(placeholder, (<|), (:<>), type (:+:), type (:<) (..), pattern Pat, Cls (..))"
+            , "(placeholder, (<|), (:<>), type (:+:), type (:<)(..), pattern Pat, Cls(..))"
+            ]
+        , testCase "splices the missing symbols in front of a CPP export list" $
+            runExportWith ["CppExportPrelude.h", "CppExportInclude.h"] "CppExport.hs" $ \doc -> do
+                txt <- runAndCheck executeExportAllAction doc (rangeAt 2 7)
+                liftIO $ do
+                    assertContainsAll txt
+                        [ "#include \"CppExportPrelude.h\""
+                        , "#include \"CppExportInclude.h\""
+                        ]
+                    assertFlaggedBlockKept "extra" txt
+        , noExportAllCase "not offered when every symbol is exported" "RemoveCtorOp.hs" 2 7
+        , noExportAllCase "not offered off the module header" "Basic.hs" 7 0  -- on `bar`
         ]
     ]
