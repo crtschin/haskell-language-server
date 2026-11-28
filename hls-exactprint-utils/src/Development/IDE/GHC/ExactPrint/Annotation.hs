@@ -100,7 +100,15 @@ withCommas (L l e : xs) = L (ensureTrailingComma l) e : withCommas xs
 
 -- | Replace an item's trailing comma with @c@, preserving its delta.
 withTrailingComma :: TrailingAnn -> SrcSpanAnnA -> SrcSpanAnnA
-withTrailingComma c = overTrailingAnns (\as -> filter (not . isCommaAnn) as ++ [c])
+withTrailingComma c = overTrailingAnns (\as -> filter (not . isCommaAnn) as ++ [withoutComments c])
+  where
+    -- Drop comments preceding a comma, otherwise we print them twice.
+#if MIN_VERSION_ghc(9,11,0)
+    withoutComments (AddCommaAnn (EpTok (EpaDelta s dp _))) = AddCommaAnn (EpTok (EpaDelta s dp []))
+#else
+    withoutComments (AddCommaAnn (EpaDelta dp _)) = AddCommaAnn (EpaDelta dp [])
+#endif
+    withoutComments other = other
 
 modifyAnns :: LocatedAn a ast -> (a -> a) -> LocatedAn a ast
 #if MIN_VERSION_ghc(9,9,0)
